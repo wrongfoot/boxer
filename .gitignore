@@ -1,0 +1,48 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# HTB workspace output (never commit target data)
+~/htb/
+*.ovpn
+
+# Payloads / generated shells (never commit)
+*.exe
+*.elf
+*.war
+*.ps1
+*.aspx
+*.py[co]
+serve/
+
+# Tool output / scan results
+*.gnmap
+*.xml
+*.json
+autorecon/
+webscan/
+loot/
+secrets-report.txt
+exploits-report.txt
+web-attack-surface.txt
+roothound-report.html
+sqlmap/
+nikto*.txt
+nuclei*.txt
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Logs
+*.log
