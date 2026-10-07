@@ -1,0 +1,21 @@
+# htb-setup.sh — Git tools list
+# One repository URL per line. Blank lines and lines starting with '#' are ignored.
+# On `./htb-setup.sh install` or `./htb-setup.sh tools`, each repo is cloned into
+# $TOOLS_DIR (default ~/htb/tools) and auto-installed (pipx/venv/go/make).
+#
+# Copy this file to ~/htb/tools.txt (or set $TOOLS_LIST) to have it picked up.
+
+# AutoRecon — multi-threaded network recon tool (Tib3rius)
+https://github.com/Tib3rius/AutoRecon
+
+# PEASS-ng — LinPEAS / WinPEAS privilege escalation enum scripts
+# (clone the repo root; linpeas.sh lives in the linPEAS/ subdir)
+https://github.com/peass-ng/PEASS-ng
+
+# RootHound — turns linPEAS output into a "shell -> root" attack-path graph
+# Usage after clone:  python3 RootHound.py linpeas.txt -o report.html
+https://github.com/Noz2/RootHound
+
+# --- add your own below ---
+# https://github.com/rebootuser/LinEnum
+# https://github.com/int0x33/nc.exe
