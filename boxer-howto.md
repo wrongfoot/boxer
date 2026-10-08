@@ -25,6 +25,7 @@ analysis.
   - [websurface](#websurface)
   - [secrets](#secrets)
   - [exploits](#exploits)
+  - [webscan](#webscan)
   - [roothound](#roothound)
   - [ftp](#ftp)
   - [http](#http)
@@ -121,8 +122,9 @@ always know what's happening:
 listed in `tools.txt`.
 
 - Installs via `apt` (one by one, so a single unavailable package doesn't abort
-  the run): nmap, ffuf, gobuster, nikto, sqlmap, hydra, john, hashcat, masscan,
-  smbclient, enum4linux, openvpn, proxychains4, python3/pipx, inotify-tools, and more.
+  the run): nmap, ffuf, gobuster, nikto, sqlmap, nuclei, hydra, john, hashcat,
+  masscan, smbclient, enum4linux, openvpn, proxychains4, python3/pipx,
+  inotify-tools, and more.
 - Clones **SecLists** to `/usr/share/seclists` and unpacks `rockyou.txt`.
 - Installs **Exploit-DB** (`searchsploit`) — from apt, or git-cloned to
   `/opt/exploitdb` on distros where apt doesn't carry it.
@@ -353,6 +355,71 @@ to `/opt/exploitdb` if apt doesn't have it).
 > service may be patched/back-ported, or the exploit may need conditions the box
 > doesn't meet. Treat these as leads to investigate, and always read the exploit
 > (`searchsploit -x`) before running anything.
+
+### webscan
+
+**What it does:** runs a three-stage web vulnerability scan against a target —
+**nikto**, **nuclei**, and optionally **sqlmap** — covering the same ground as
+Burp Suite's active scanner, entirely from the CLI and for free. All results land
+in `~/htb/<box>/webscan/`.
+
+```bash
+./boxer.sh webscan 10.10.10.40 blue
+# or pass a full URL:
+./boxer.sh webscan http://blue.htb:8080 blue
+```
+
+**Stage 1 — nikto**
+
+A fast, broad web-server audit. Nikto checks for:
+- Outdated or vulnerable server software (Apache, nginx, IIS versions with known CVEs).
+- Dangerous default files (admin panels, config backups, `.git` folders, test pages).
+- Missing security headers (`X-Frame-Options`, `Content-Security-Policy`, etc.).
+- Misconfigured HTTP methods (PUT, DELETE enabled).
+
+Findings that mention CVEs, XSS, SQLi, traversal, or upload are highlighted in the
+terminal. Full output goes to `~/htb/<box>/webscan/nikto.txt`.
+
+**Stage 2 — nuclei**
+
+Template-driven vulnerability scanning. Nuclei uses `-automatic-scan` mode, which:
+1. Fingerprints the tech stack via Wappalyzer (e.g. Apache 2.4, PHP 8, WordPress).
+2. Automatically loads only the templates that apply to what it detected, keeping noise low.
+
+Falls back to an explicit tag filter (`cve,rce,sqli,xss,lfi,ssrf,exposure,misconfig`)
+on older nuclei versions. Only **medium/high/critical** findings are reported.
+Output goes to `~/htb/<box>/webscan/nuclei.txt`.
+
+> **Note:** on first run, nuclei auto-downloads its template library (~100 MB).
+> It's available via `sudo apt install nuclei` on ParrotOS/Kali, or:
+> ```bash
+> go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+> ```
+> `./boxer.sh install` will attempt to install it automatically via apt.
+
+**Stage 3 — sqlmap (prompted)**
+
+Because sqlmap sends many requests and can be noisy, it's opt-in — the script
+prompts before running it. When accepted, it crawls the target 3 levels deep at
+`--level=2 --risk=1` (smart but not aggressive) and reports any injectable parameters.
+Output goes to `~/htb/<box>/webscan/sqlmap/`.
+
+**What each tool is best at:**
+
+| Tool | Best for |
+|------|----------|
+| nikto | Server-level misconfigs, default files, header issues |
+| nuclei | CVE matching by tech stack, known exploits, exposure/misconfiguration templates |
+| sqlmap | SQL injection discovery across all crawled forms and parameters |
+
+**Tip:** run `webscan` after `recon` and alongside `secrets` for full coverage:
+
+```bash
+./boxer.sh recon 10.10.10.40 blue        # nmap + service fingerprinting
+./boxer.sh webscan 10.10.10.40 blue      # nikto + nuclei + sqlmap
+./boxer.sh secrets 10.10.10.40 blue      # crawl for leaked creds/tokens/keys
+./boxer.sh exploits blue                 # match services to Exploit-DB
+```
 
 ### roothound
 

