@@ -556,6 +556,122 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# vhost_watcher — parse AutoRecon output for discovered hostnames and add
+# them to /etc/hosts automatically as they appear
+# ---------------------------------------------------------------------------
+# Two tracks with different trust levels:
+#
+#  TRUSTED (always added, any TLD):
+#    - AutoRecon redirect-host-discovery lines:
+#        "Hostname found in redirect: searcher.htb"
+#        "Hostname found in redirect: searcher.offsec"
+#    - HTTP Location: redirect headers parsed from scan output
+#
+#  FILTERED (added only if box-related):
+#    - SSL/TLS cert CN / SAN fields
+#    - gobuster/ffuf vhost hits
+#    - Any other *.htb hostname found in scan text
+#    Box-related = ends in .htb OR contains the box name as a component.
+#    Common noise (localhost, example.com, common.name, etc.) is always skipped.
+#
+# Args: <ip> <autorecon-outdir> <box-name> [follow_pid]
+vhost_watcher() {
+  local ip="$1" outdir="$2" box="$3" follow_pid="${4:-}"
+  local seen="${outdir}/.vhosts_seen"; touch "$seen"
+  local box_lc; box_lc="$(echo "$box" | tr '[:upper:]' '[:lower:]')"
+
+  # Noise-filter: always skip these regardless of source.
+  local SKIP_RE='(^localhost$|^127\.|^0\.0\.0\.0|example\.(com|org|net)|common\.name|^invalid$|^internal$)'
+
+  # ---- Track 1: TRUSTED sources (any TLD accepted) -------------------------
+  # AutoRecon explicitly reports these — no need to second-guess the TLD.
+  extract_trusted() {
+    [[ -d "$outdir" ]] || return 0
+    {
+      # "Hostname found in redirect: searcher.htb"  (any TLD)
+      grep -rhoiE 'Hostname found in redirect:\s+[a-zA-Z0-9._-]+\.[a-zA-Z]{2,10}' \
+        "$outdir" 2>/dev/null \
+        | grep -oiE '[a-zA-Z0-9._-]+\.[a-zA-Z]{2,10}$' || true
+      # HTTP Location: http[s]://hostname  (any TLD — AutoRecon captures these verbatim)
+      grep -rhoiE 'location:\s*https?://[a-zA-Z0-9._-]+\.[a-zA-Z]{2,10}' \
+        "$outdir" 2>/dev/null \
+        | grep -oiE '[a-zA-Z0-9._-]+\.[a-zA-Z]{2,10}$' || true
+    } | sort -u
+  }
+
+  # ---- Track 2: FILTERED sources (box-related check applied) ---------------
+  extract_candidates() {
+    [[ -d "$outdir" ]] || return 0
+    {
+      # SSL/TLS cert CN and SAN fields
+      grep -rhoiE '(CN|commonName|DNS)\s*[=:]\s*\*?\.?[a-zA-Z0-9._-]+\.[a-zA-Z]{2,10}' \
+        "$outdir" 2>/dev/null \
+        | grep -oiE '[a-zA-Z0-9._-]+\.[a-zA-Z]{2,10}$' || true
+      # Any *.htb hostname anywhere in scan output
+      grep -rhoiE '\b[a-zA-Z0-9_-]+\.htb\b' "$outdir" 2>/dev/null || true
+      # gobuster/ffuf vhost results: "Found: sub.box.htb (Status: 200)"
+      grep -rhoiE 'Found:\s+[a-zA-Z0-9._-]+\.[a-zA-Z]{2,10}' "$outdir" 2>/dev/null \
+        | grep -oiE '[a-zA-Z0-9._-]+\.[a-zA-Z]{2,10}$' || true
+    } | sort -u
+  }
+
+  # ---- Shared: dedup + add to /etc/hosts -----------------------------------
+  add_if_new() {
+    local h; h="$(echo "$1" | tr '[:upper:]' '[:lower:]')"
+    [[ -z "$h" ]]                              && return 0
+    echo "$h" | grep -qiE "$SKIP_RE"           && return 0   # noise
+    grep -qxF "$h" "$seen" 2>/dev/null         && return 0   # already seen
+    echo "$h" >> "$seen"
+    c_ok "vhost discovered: $h -> adding to /etc/hosts"
+    add_hosts_entry "$ip" "$h" || true
+  }
+
+  process_vhosts() {
+    # Trusted track — no TLD restriction
+    while IFS= read -r host; do
+      [[ -z "$host" ]] && continue
+      add_if_new "$host"
+    done < <(extract_trusted)
+
+    # Filtered track — only box-related hostnames
+    while IFS= read -r host; do
+      [[ -z "$host" ]] && continue
+      local h; h="$(echo "$host" | tr '[:upper:]' '[:lower:]')"
+      # Skip unless it ends in .htb or contains the box name
+      [[ "$h" == *.htb || "$h" == *"${box_lc}"* ]] || continue
+      add_if_new "$h"
+    done < <(extract_candidates)
+  }
+
+  c_info "vhost watcher started — will auto-add discovered hostnames to /etc/hosts"
+  process_vhosts   # initial pass on any existing output
+
+  local rounds=0
+  while :; do
+    sleep 10
+    process_vhosts
+    if [[ -n "$follow_pid" ]]; then
+      kill -0 "$follow_pid" 2>/dev/null || break
+    else
+      rounds=$((rounds+1)); [[ $rounds -ge 180 ]] && break  # ~30 min cap
+    fi
+  done
+
+  # Final pass once AutoRecon is fully done.
+  process_vhosts
+
+  local total; total=$(wc -l < "$seen" | tr -d ' ')
+  if [[ "$total" -gt 0 ]]; then
+    c_ok "vhost watcher: $total hostname(s) added to /etc/hosts:"
+    while IFS= read -r h; do c_info "  $h -> $ip"; done < "$seen"
+  else
+    c_info "vhost watcher: no new hostnames discovered."
+  fi
+  rm -f "$seen"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # run_autorecon — launch AutoRecon against a target, output into workspace
 # ---------------------------------------------------------------------------
 run_autorecon() {
@@ -595,6 +711,12 @@ run_autorecon() {
   fi
   local ar_pid=$!
 
+  # Launch the vhost watcher in the background — it polls AutoRecon output for
+  # newly discovered hostnames (redirects, SSL cert CNs/SANs, gobuster vhost hits)
+  # and adds them to /etc/hosts automatically.
+  vhost_watcher "$ip" "$out" "$(basename "$dir")" "$ar_pid" &
+  local vhost_pid=$!
+
   # Run the web attack-surface watcher in parallel; it follows AutoRecon's PID
   # and reports exploitable input methods (uploads, logins, POST forms) as it
   # discovers URLs. Requires curl.
@@ -605,6 +727,7 @@ run_autorecon() {
   fi
 
   wait "$ar_pid" 2>/dev/null && c_ok "AutoRecon finished." || c_warn "AutoRecon exited non-zero — check $out"
+  wait "$vhost_pid" 2>/dev/null || true   # let the vhost watcher finish its final pass
 
   # Final deep pass: now that AutoRecon has discovered URLs, hunt for secrets.
   if have python3; then

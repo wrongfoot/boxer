@@ -21,6 +21,9 @@ Only run this against machines you're authorized to test (HTB labs or your own s
 - Connect VPN: `./boxer.sh vpn lab.ovpn` → confirm with `ip a show tun0`.
 - Ping-check the box (some block ICMP; use `-Pn` in nmap if so).
 - Add hostnames to `/etc/hosts` when a box uses vhosts: `10.10.10.x  box.htb`.
+  When AutoRecon runs via `workspace`, a **vhost watcher** runs alongside it and
+  automatically adds any discovered hostnames (from HTTP redirects, SSL cert
+  CN/SAN fields, and gobuster vhost hits) to `/etc/hosts` as they appear.
 
 ---
 

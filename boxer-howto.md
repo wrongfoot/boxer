@@ -226,10 +226,41 @@ Specifically it:
 4. Creates `~/htb/<box>/` with subfolders `nmap/ enum/ exploit/ loot/ www/ autorecon/`.
 5. Writes a `notes.md` template (ports table, creds table, foothold/privesc sections).
 6. Prompts: **"Run AutoRecon against `<ip>` now? [y/N]"** — yes launches recon.
+7. Starts a **vhost watcher** in the background alongside AutoRecon — see below.
 
 ```bash
 ./boxer.sh workspace blue            # will prompt for the IP
 ./boxer.sh workspace blue 10.10.10.40   # IP supplied up front
+```
+
+#### Automatic vhost discovery
+
+While AutoRecon runs, a **vhost watcher** runs in the background polling the scan
+output every 10 seconds. Whenever it finds a new hostname it adds it to
+`/etc/hosts` automatically (with `need_root` / sudo), so you never have to stop
+and manually add entries mid-scan.
+
+It parses four sources from AutoRecon's output:
+
+| Source | TLD restriction | Example |
+|--------|----------------|---------|
+| AutoRecon `Hostname found in redirect:` | **None — any TLD** | `searcher.htb`, `searcher.offsec`, `searcher.local` |
+| HTTP `Location:` redirect headers | **None — any TLD** | `Location: http://admin.blue.htb/` |
+| SSL/TLS certificate CN / SAN | box-related only | `CN=blue.htb`, `DNS:api.blue.htb` |
+| nmap http/ssl script output | `.htb` only | any `*.htb` hostname in scan text |
+| gobuster/ffuf vhost results | box-related only | `Found: dev.blue.htb (Status: 200)` |
+
+Sources AutoRecon explicitly reports (redirect-host-discovery and Location headers)
+are trusted unconditionally — any TLD is accepted. Everything else is filtered to
+hostnames ending in `.htb` or containing the box name. Generic noise (`localhost`,
+`common.name`, `example.com`, bare single-label names) is always skipped.
+
+At the end of the run it prints a summary of everything it added:
+
+```
+[+] vhost watcher: 2 hostname(s) added to /etc/hosts:
+[*]   admin.blue.htb -> 10.10.10.40
+[*]   api.blue.htb   -> 10.10.10.40
 ```
 
 ### recon
