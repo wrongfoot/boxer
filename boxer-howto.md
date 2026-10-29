@@ -26,6 +26,8 @@ analysis.
   - [secrets](#secrets)
   - [exploits](#exploits)
   - [webscan](#webscan)
+  - [smbenum](#smbenum)
+  - [ftpenum](#ftpenum)
   - [roothound](#roothound)
   - [ftp](#ftp)
   - [http](#http)
@@ -451,6 +453,110 @@ Output goes to `~/htb/<box>/webscan/sqlmap/`.
 ./boxer.sh secrets 10.10.10.40 blue      # crawl for leaked creds/tokens/keys
 ./boxer.sh exploits blue                 # match services to Exploit-DB
 ```
+
+### smbenum
+
+**What it does:** probes for **SMB null/guest/anonymous access** and lists available
+shares. Runs automatically whenever `recon` or AutoRecon (via `workspace`) discovers
+port 445 open. Also available as a standalone command.
+
+```bash
+./boxer.sh smbenum 10.10.10.40 blue
+```
+
+Output is saved to `~/htb/<box>/nmap/smb-null-check.txt`. Every command is
+printed to the terminal as it runs so you can see exactly what was executed.
+
+**Stage 1 — netexec smb \<ip\> --shares**
+
+[netexec](https://github.com/Pennyw0rth/NetExec) (formerly CrackMapExec) attempts a
+null/anonymous SMB session and lists all shares with their read/write permissions:
+
+```
+netexec smb 10.10.10.40 --shares
+```
+
+If the output shows `[+]`, `READ`, `WRITE`, `Guest session`, or similar indicators,
+null/guest access is confirmed and Stage 2 runs automatically.
+
+**Stage 2 — smbclient -N -L //\<ip\>**
+
+Requests the share listing with a null password (`-N`). Useful for confirming shares
+and verifying which ones allow anonymous browsing:
+
+```
+smbclient -N -L //10.10.10.40
+```
+
+**Automatic triggering:** when AutoRecon finds port 445 open in its nmap XML output,
+boxer runs `smbenum` automatically at the end of the scan — no manual step needed.
+The same happens in the `recon` command. This means that on a typical SMB box you'll
+have null-session results waiting for you before you even look at the scan output.
+
+**If netexec isn't installed:**
+
+```bash
+sudo apt install netexec        # ParrotOS / Kali (most up to date)
+pipx install netexec            # any distro via pipx
+```
+
+`./boxer.sh install` adds netexec to the apt package list and will install it
+automatically if the package is available.
+
+**Tip:** after confirming access, dig deeper manually:
+
+```bash
+# List files in a share
+smbclient -N //10.10.10.40/Data
+# Recursive file listing
+smbclient -N //10.10.10.40/Data -c "recurse; ls"
+# Mount the share
+sudo mount -t cifs //10.10.10.40/Data /mnt/smb -o "guest,vers=2.0"
+```
+
+---
+
+### ftpenum
+
+**What it does:** checks whether the FTP service accepts **anonymous login** and, if
+so, lists the root directory. Runs automatically when `recon` or AutoRecon (via
+`workspace`) discovers port 21 open. Also available as a standalone command.
+
+```bash
+./boxer.sh ftpenum 10.10.10.40 blue
+```
+
+Output is saved to `~/htb/<box>/nmap/ftp-anon-check.txt`. The command that was run
+is printed before each stage so you can reproduce it manually.
+
+**How it works:**
+
+Uses `curl` (already a boxer dependency) to attempt an anonymous FTP login:
+
+```
+curl -s --connect-timeout 10 --user anonymous:anonymous ftp://<ip>/
+```
+
+If the login succeeds, a second curl call with `--list-only` retrieves a clean file
+listing. If it fails, the result is noted in the output file and no further steps run.
+
+**If anonymous access is confirmed, dig in manually:**
+
+```bash
+# Interactive FTP shell
+ftp anonymous@10.10.10.40
+
+# Common FTP commands once connected
+ls -la          # list files
+cd <dir>        # change directory
+get <file>      # download a file
+mget *          # download everything in the current directory
+```
+
+**Automatic triggering:** identical to the SMB check — when AutoRecon's nmap output
+shows port 21 open, boxer fires `ftpenum` automatically at the end of the scan.
+
+---
 
 ### roothound
 

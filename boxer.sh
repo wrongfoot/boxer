@@ -38,7 +38,7 @@ WORDLIST_ROCKYOU="/usr/share/wordlists/rockyou.txt"
 APT_PACKAGES=(
   nmap netcat-openbsd ncat socat curl wget git jq dnsutils whois
   gobuster ffuf nikto sqlmap nuclei hydra john hashcat masscan
-  smbclient enum4linux ldap-utils snmp onesixtyone
+  smbclient netexec enum4linux ldap-utils snmp onesixtyone
   python3 python3-pip python3-venv pipx
   ruby-full openvpn openssl proxychains4 tmux xxd inotify-tools exploitdb
   metasploit-framework veil
@@ -183,7 +183,7 @@ cmd_install() {
 # ---------------------------------------------------------------------------
 cmd_doctor() {
   local tools=(nmap ffuf gobuster nikto sqlmap nuclei hydra john hashcat \
-               smbclient nc curl python3 pipx openvpn proxychains4 tmux jq searchsploit msfvenom)
+               smbclient netexec nc curl python3 pipx openvpn proxychains4 tmux jq searchsploit msfvenom)
   local missing=0
   c_info "Checking installed tools..."
   for t in "${tools[@]}"; do
@@ -729,6 +729,19 @@ run_autorecon() {
   wait "$ar_pid" 2>/dev/null && c_ok "AutoRecon finished." || c_warn "AutoRecon exited non-zero — check $out"
   wait "$vhost_pid" 2>/dev/null || true   # let the vhost watcher finish its final pass
 
+  # If AutoRecon found port 445/tcp open, probe for SMB null/guest access.
+  # We search the nmap XML and gnmap files AutoRecon writes into its output tree.
+  if grep -rqlE '(port protocol="tcp"[^>]*portid="445"[^>]*state="open"|445/open/tcp)' "$out" 2>/dev/null; then
+    c_info "Port 445 (SMB) found open — running null/guest access check..."
+    cmd_smbenum "$ip" "$(basename "$dir")" || true
+  fi
+
+  # If AutoRecon found port 21/tcp open, probe for FTP anonymous access.
+  if grep -rqlE '(port protocol="tcp"[^>]*portid="21"[^>]*state="open"|21/open/tcp)' "$out" 2>/dev/null; then
+    c_info "Port 21 (FTP) found open — checking for anonymous login..."
+    cmd_ftpenum "$ip" "$(basename "$dir")" || true
+  fi
+
   # Final deep pass: now that AutoRecon has discovered URLs, hunt for secrets.
   if have python3; then
     c_info "Running secret scan over discovered web content..."
@@ -795,14 +808,167 @@ cmd_recon() {
     fi
   fi
 
-  # 4) SMB peek if 139/445 open
+  # 4) SMB null/guest + deep enum if 139/445 open
   if grep -qE '(^|,)(139|445)(,|$)' <<<"$ports"; then
-    c_info "Stage 4: SMB detected — enumerating shares..."
-    if have smbclient; then smbclient -N -L "//$ip" >"$out/smb-shares.txt" 2>&1 || true; c_ok "smb -> $out/smb-shares.txt"; fi
+    c_info "Stage 4: SMB detected — running null/guest access check..."
+    cmd_smbenum "$ip" "$box" || true
     if have enum4linux; then enum4linux -a "$ip" >"$out/enum4linux.txt" 2>&1 || true; c_ok "enum4linux -> $out/enum4linux.txt"; fi
   fi
 
+  # 5) FTP anonymous login check if port 21 open
+  if grep -qE '(^|,)21(,|$)' <<<"$ports"; then
+    c_info "Stage 5: FTP detected — checking for anonymous login..."
+    cmd_ftpenum "$ip" "$box" || true
+  fi
+
   c_ok "Recon complete. Review $out and update ${HTB_ROOT}/${box}/notes.md"
+}
+
+# ---------------------------------------------------------------------------
+# smbenum — SMB null/guest access probe + share listing
+# ---------------------------------------------------------------------------
+# Runs automatically when port 445 is found open (by recon or AutoRecon) and
+# is also available as a standalone command: ./boxer.sh smbenum <ip> [box]
+#
+# Stage 1 — netexec/nxc smb <ip> --shares:
+#   Probes for null/anonymous/guest session and lists shares with permissions.
+# Stage 2 — smbclient -N -L //<ip>:
+#   Runs if Stage 1 detects any access (or if netexec is absent as a fallback).
+#
+# Output saved to ~/htb/<box>/nmap/smb-null-check.txt; commands are printed
+# as they run so you can see exactly what was executed.
+cmd_smbenum() {
+  local ip="${1:-}"; local box="${2:-target}"
+  if [[ -z "$ip" ]]; then c_err "Usage: $0 smbenum <target-ip> [box-name]"; exit 1; fi
+
+  local dir="${HTB_ROOT}/${box}/nmap"; mkdir -p "$dir"
+  local out="$dir/smb-null-check.txt"
+
+  c_warn "Only scan systems you are authorized to test (HTB labs / your own systems)."
+  c_info "SMB null/guest check: $ip -> $out"
+
+  {
+    printf '# SMB Null/Guest Access Check\n'
+    printf '# Target: %s  Box: %s\n' "$ip" "$box"
+    printf '# %s\n\n' "$(date)"
+  } > "$out"
+
+  # Prefer netexec (>= v1), fall back to nxc alias, then crackmapexec
+  local nxc_bin=""
+  for _b in netexec nxc crackmapexec; do
+    if have "$_b"; then nxc_bin="$_b"; break; fi
+  done
+
+  # ── Stage 1: null/guest probe via netexec ─────────────────────────────────
+  local nx_out="" has_access=0
+
+  if [[ -n "$nxc_bin" ]]; then
+    local nx_cmd="$nxc_bin smb $ip --shares"
+    c_info "▶ Running: $nx_cmd"
+    printf '## Command: %s\n' "$nx_cmd" >> "$out"
+    nx_out=$( $nxc_bin smb "$ip" --shares 2>&1 || true )
+    printf '%s\n\n' "$nx_out" >> "$out"
+    printf '%s\n' "$nx_out"
+
+    # Detect read/write access or guest/null session markers in the output.
+    # netexec tags successful lines with [+] and prints "(Guest session)" or
+    # similar text when authenticated as nobody.
+    if printf '%s\n' "$nx_out" | grep -qiE '(\[\+\]|READ|WRITE|Guest session|anonymous|null session|\(Guest\))'; then
+      has_access=1
+      c_ok "Null/guest/read access detected on SMB!"
+    else
+      c_info "No null/guest access confirmed via $nxc_bin (may still be worth trying smbclient)."
+    fi
+  else
+    c_warn "netexec / nxc / crackmapexec not installed — null-access probe skipped."
+    c_info "Install: sudo apt install netexec   OR   pipx install netexec"
+    printf '## Note: netexec not installed — null-access probe skipped.\n\n' >> "$out"
+    has_access=1   # attempt smbclient anyway as a best-effort fallback
+  fi
+
+  # ── Stage 2: smbclient share listing ─────────────────────────────────────
+  if [[ $has_access -eq 1 ]]; then
+    local smb_cmd="smbclient -N -L //$ip"
+    c_info "▶ Running: $smb_cmd"
+    printf '## Command: %s\n' "$smb_cmd" >> "$out"
+    if have smbclient; then
+      local smb_out
+      smb_out=$( smbclient -N -L "//$ip" 2>&1 || true )
+      printf '%s\n\n' "$smb_out" >> "$out"
+      printf '%s\n' "$smb_out"
+      c_ok "smbclient list complete -> $out"
+    else
+      c_warn "smbclient not installed — skipping share listing."
+      printf 'smbclient not installed\n' >> "$out"
+    fi
+  fi
+
+  c_ok "SMB null/guest check complete -> $out"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# ftpenum — FTP anonymous login probe
+# ---------------------------------------------------------------------------
+# Runs automatically when port 21 is found open (by recon or AutoRecon) and
+# is also available as a standalone command: ./boxer.sh ftpenum <ip> [box]
+#
+# Attempts an anonymous FTP login via curl (ftp://anonymous:anonymous@<ip>/)
+# and lists the root directory if successful. Commands are printed as they run.
+# Output saved to ~/htb/<box>/nmap/ftp-anon-check.txt
+cmd_ftpenum() {
+  local ip="${1:-}"; local box="${2:-target}"
+  if [[ -z "$ip" ]]; then c_err "Usage: $0 ftpenum <target-ip> [box-name]"; exit 1; fi
+
+  local dir="${HTB_ROOT}/${box}/nmap"; mkdir -p "$dir"
+  local out="$dir/ftp-anon-check.txt"
+
+  c_warn "Only scan systems you are authorized to test (HTB labs / your own systems)."
+  c_info "FTP anonymous login check: $ip -> $out"
+
+  {
+    printf '# FTP Anonymous Login Check\n'
+    printf '# Target: %s  Box: %s\n' "$ip" "$box"
+    printf '# %s\n\n' "$(date)"
+  } > "$out"
+
+  if ! have curl; then
+    c_warn "curl not installed — FTP anonymous check skipped."
+    printf 'curl not installed — skipped.\n' >> "$out"
+    return 0
+  fi
+
+  # ── Stage 1: anonymous login + root directory listing ────────────────────
+  local ftp_cmd="curl -s --connect-timeout 10 --user anonymous:anonymous ftp://${ip}/"
+  c_info "▶ Running: $ftp_cmd"
+  printf '## Command: %s\n' "$ftp_cmd" >> "$out"
+
+  local ftp_out ftp_rc
+  ftp_out=$( curl -s --connect-timeout 10 --user anonymous:anonymous "ftp://${ip}/" 2>&1 ) && ftp_rc=0 || ftp_rc=$?
+
+  printf '%s\n\n' "$ftp_out" >> "$out"
+
+  if [[ $ftp_rc -eq 0 && -n "$ftp_out" ]]; then
+    c_ok "Anonymous FTP login SUCCESS on $ip !"
+    printf '%s\n' "$ftp_out"
+
+    # ── Stage 2: recursive listing (best-effort, non-fatal) ────────────────
+    local list_cmd="curl -s --connect-timeout 10 --user anonymous:anonymous ftp://${ip}/ --list-only"
+    c_info "▶ Running: $list_cmd"
+    printf '## Command: %s\n' "$list_cmd" >> "$out"
+    local list_out
+    list_out=$( curl -s --connect-timeout 10 --user anonymous:anonymous "ftp://${ip}/" --list-only 2>&1 || true )
+    printf '%s\n\n' "$list_out" >> "$out"
+    printf '%s\n' "$list_out"
+
+    c_ok "FTP anonymous access confirmed — output -> $out"
+    c_info "Tip: connect manually with:  ftp anonymous@$ip   or   smbclient ftp://$ip"
+  else
+    c_info "Anonymous FTP login failed (rc=$ftp_rc) — server likely requires credentials."
+    printf '## Result: anonymous login FAILED (rc=%s)\n' "$ftp_rc" >> "$out"
+  fi
+
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -1906,12 +2072,14 @@ EOF
     9) Hunt for secrets (creds / tokens / keys in pages, JS, headers)
    10) Match fingerprinted services to known exploits (searchsploit)
    11) Web vulnerability scan (nikto + nuclei + sqlmap)
+   12) SMB null/guest access check + share listing (netexec + smbclient)
+   13) FTP anonymous login check
 
   Post-exploitation
-   12) Start a file-delivery server (HTTP or anonymous FTP)
-   13) Watch for linPEAS uploads -> auto privesc graph (RootHound)
-   14) Generate reverse-shell payload (msfvenom)
-   15) Stage flag-finder scripts (user.txt/root.txt, Linux + Windows)
+   14) Start a file-delivery server (HTTP or anonymous FTP)
+   15) Watch for linPEAS uploads -> auto privesc graph (RootHound)
+   16) Generate reverse-shell payload (msfvenom)
+   17) Stage flag-finder scripts (user.txt/root.txt, Linux + Windows)
 
     h) Full help / command reference
     0) Quit
@@ -1937,10 +2105,12 @@ EOF
       9)  __label="Hunt for secrets" ;;
       10) __label="Match services to known exploits" ;;
       11) __label="Web vulnerability scan (nikto + nuclei + sqlmap)" ;;
-      12) __label="Start a file-delivery server" ;;
-      13) __label="Watch for linPEAS uploads (RootHound)" ;;
-      14) __label="Generate a reverse-shell payload" ;;
-      15) __label="Stage flag-finder scripts" ;;
+      12) __label="SMB null/guest access check + share listing" ;;
+      13) __label="FTP anonymous login check" ;;
+      14) __label="Start a file-delivery server" ;;
+      15) __label="Watch for linPEAS uploads (RootHound)" ;;
+      16) __label="Generate a reverse-shell payload" ;;
+      17) __label="Stage flag-finder scripts" ;;
       *)  __label="" ;;
     esac
     [[ -n "$__label" ]] && c_info "▶ Running: ${__label}"
@@ -1957,7 +2127,9 @@ EOF
       9) local ip box; ask ip "Target IP: "; ask box "Box name: "; cmd_secrets "${ip:-}" "${box:-target}" ;;
       10) local box; ask box "Box name: "; cmd_exploits "${box:-target}" ;;
       11) local ip box; ask ip "Target IP or URL: "; ask box "Box name: "; cmd_webscan "${ip:-}" "${box:-target}" ;;
-      12) local proto d p b w
+      12) local ip box; ask ip "Target IP: "; ask box "Box name: "; cmd_smbenum "${ip:-}" "${box:-target}" ;;
+      13) local ip box; ask ip "Target IP: "; ask box "Box name: "; cmd_ftpenum "${ip:-}" "${box:-target}" ;;
+      14) local proto d p b w
          ask proto "Which server?  1) HTTP (best if FTP is blocked)   2) anonymous FTP   [1]: "
          ask d "Directory to serve [~/htb/serve]: "
          ask b "Bind (auto / all / eth0 / tun0 / IP) [auto]: "
@@ -1971,9 +2143,9 @@ EOF
              ask p "Port [80]: "
              cmd_http "${d:-}" "${p:-80}" "${b:-auto}" ;;
          esac ;;   # exec's the server (ends the menu)
-      13) local b; ask b "Box name (blank = watch ALL boxes): "; cmd_roothound ${b:+"$b"} ;;
-      14) cmd_shell ;;
-      15) cmd_flags ;;
+      15) local b; ask b "Box name (blank = watch ALL boxes): "; cmd_roothound ${b:+"$b"} ;;
+      16) cmd_shell ;;
+      17) cmd_flags ;;
       h|H|help) usage ;;
       0|q|Q|quit|exit) c_info "Good hunting."; return 0 ;;
       "") : ;;   # empty input -> redraw
@@ -2005,6 +2177,16 @@ Commands:
                                 Covers the same ground as Burp Suite's active scanner.
                                 nikto: server misconfigs; nuclei: CVE/exposure templates
                                 (auto-selects by detected tech stack); sqlmap: SQLi (prompted).
+  smbenum <ip> [box]            SMB null/guest access check + share listing.
+                                Stage 1: netexec smb <ip> --shares (detects null/guest access)
+                                Stage 2: smbclient -N -L //<ip> (if access confirmed).
+                                Runs automatically when port 445 is found by recon/AutoRecon.
+                                Output: ~/htb/<box>/nmap/smb-null-check.txt
+  ftpenum <ip> [box]            FTP anonymous login check.
+                                Attempts anonymous:anonymous login via curl.
+                                If successful, lists the root directory.
+                                Runs automatically when port 21 is found by recon/AutoRecon.
+                                Output: ~/htb/<box>/nmap/ftp-anon-check.txt
   roothound [box|file]          Auto-run RootHound on uploaded linPEAS output.
                                 No arg = watch ALL boxes' loot/ dirs; or name a
                                 box, or pass a linPEAS file for a one-shot run.
@@ -2041,6 +2223,8 @@ main() {
     secrets)   cmd_secrets "$@" ;;
     exploits)  cmd_exploits "$@" ;;
     webscan)   cmd_webscan "$@" ;;
+    smbenum)   cmd_smbenum "$@" ;;
+    ftpenum)   cmd_ftpenum "$@" ;;
     roothound) cmd_roothound "$@" ;;
     ftp)       cmd_ftp "$@" ;;
     http)      cmd_http "$@" ;;

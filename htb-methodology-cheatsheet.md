@@ -43,10 +43,10 @@ sudo nmap -sU --top-ports 50 -Pn <ip>
 ### By service
 | Port | Service | First moves |
 |------|---------|-------------|
-| 21 | FTP | Try `anonymous`/`anonymous`; check for writable dirs |
+| 21 | FTP | `./boxer.sh ftpenum <ip> <box>` (auto-runs when 21 found), or manually: `ftp anonymous@<ip>` |
 | 22 | SSH | Note version; look for creds/keys elsewhere before brute forcing |
 | 80/443/8080 | HTTP(S) | `whatweb`, view source, `/robots.txt`, dir brute (ffuf/gobuster), vhost fuzz |
-| 139/445 | SMB | `smbclient -N -L //<ip>`, `enum4linux -a`, null sessions, share hunting |
+| 139/445 | SMB | `./boxer.sh smbenum <ip> <box>` (auto-runs when 445 found), or manually: `smbclient -N -L //<ip>`, `enum4linux -a` |
 | 111/2049 | NFS | `showmount -e <ip>`, mount exports |
 | 3306/5432/1433 | DB | Default creds, `mysql -h`, `mssqlclient.py` |
 | 3389 | RDP | Version, NLA state; creds reuse |
@@ -67,6 +67,41 @@ nikto -host http://<ip>
   `./boxer.sh secrets <ip> <box>` — automated crawl + regex scan.
 - **Active vulnerability scan** — nikto + nuclei + sqlmap in one command:
   `./boxer.sh webscan <ip> <box>` (see below).
+
+### FTP enumeration (automated)
+
+When port 21 is found open, `recon` and AutoRecon (via `workspace`) automatically
+run `ftpenum`. You can also run it standalone:
+
+```bash
+./boxer.sh ftpenum 10.10.10.40 blue
+```
+
+It attempts `anonymous:anonymous` login via curl. If it succeeds, the root directory
+listing is printed and saved to `~/htb/<box>/nmap/ftp-anon-check.txt`. If you see
+files, connect manually:
+
+```bash
+ftp anonymous@10.10.10.40       # interactive FTP shell
+get <filename>                  # download a file
+```
+
+### SMB enumeration (automated)
+
+When port 445 is found open, `recon` and AutoRecon (via `workspace`) automatically
+run `smbenum` — no extra step needed. You can also run it standalone:
+
+```bash
+./boxer.sh smbenum 10.10.10.40 blue
+```
+
+| Stage | Command | What it checks |
+|-------|---------|----------------|
+| 1 | `netexec smb <ip> --shares` | Null/guest session; share names + READ/WRITE permissions |
+| 2 | `smbclient -N -L //<ip>` | Share listing (runs if Stage 1 confirms access) |
+
+Output lands in `~/htb/<box>/nmap/smb-null-check.txt`. If you see shares with READ
+access, immediately try: `smbclient -N //<ip>/<ShareName>` then `ls` / `get`.
 
 ### Web vulnerability scanning (automated)
 
