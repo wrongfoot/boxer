@@ -678,6 +678,75 @@ run_autorecon() {
   # $1 = plain IP (used for web/secrets/URLs); $3 = AutoRecon target in CIDR
   # (falls back to the plain IP if not supplied).
   local ip="$1" dir="${2:-$PWD}" ar_target="${3:-$1}"
+  local box; box="$(basename "$dir")"
+
+  # ── Pre-scan: discover hostnames BEFORE AutoRecon starts ─────────────────
+  # AutoRecon (and the tools it launches, including feroxbuster) use the
+  # target string you pass it for every sub-tool URL. If that string is an IP
+  # address, feroxbuster scans http://10.10.10.40/ and misses vhost-routed
+  # content. We fix this by finding the hostname first so AutoRecon gets
+  # "searcher.htb" instead of the raw IP.
+  #
+  # Strategy (in priority order):
+  #  1. HTTP port 80 — follow the Location: redirect header
+  #  2. HTTPS port 443 — read the SSL certificate CN/SAN
+  #  3. Fall back to <box>.htb if it's already in /etc/hosts (workspace flow)
+  #
+  # Any hostname found is immediately written to /etc/hosts, and ar_target is
+  # updated so AutoRecon starts with the right name.
+  c_info "Pre-scan: probing for hostname before launching AutoRecon..."
+  local _prescan_host=""
+
+  # 1) HTTP redirect check
+  if have curl; then
+    local _redir
+    _redir=$(curl -sI --connect-timeout 6 --max-time 10 "http://${ip}/" 2>/dev/null \
+      | grep -i '^[Ll]ocation:' \
+      | grep -oiE '[a-zA-Z0-9._-]+\.[a-zA-Z]{2,10}' \
+      | grep -viE '^(localhost|example\.(com|org|net)|invalid)$' \
+      | head -1 || true)
+    if [[ -n "$_redir" && "$_redir" != "$ip" ]]; then
+      c_ok "Pre-scan: HTTP redirect -> $_redir"
+      add_hosts_entry "$ip" "$_redir" || true
+      _prescan_host="$_redir"
+    fi
+  fi
+
+  # 2) SSL certificate CN / SAN on port 443 (only if we didn't find one yet)
+  if [[ -z "$_prescan_host" ]] && have openssl; then
+    if curl -sk --connect-timeout 4 --max-time 6 "https://${ip}/" >/dev/null 2>&1; then
+      local _ssl_host
+      _ssl_host=$(echo \
+        | timeout 8 openssl s_client -connect "${ip}:443" -servername "$ip" 2>/dev/null \
+        | openssl x509 -noout -subject -ext subjectAltName 2>/dev/null \
+        | grep -oiE '(CN\s*=\s*|DNS:)\*?\.?[a-zA-Z0-9._-]+\.[a-zA-Z]{2,10}' \
+        | grep -oiE '[a-zA-Z0-9._-]+\.[a-zA-Z]{2,10}$' \
+        | grep -viE '^(localhost|example\.(com|org|net)|invalid)$' \
+        | head -1 || true)
+      if [[ -n "$_ssl_host" && "$_ssl_host" != "$ip" ]]; then
+        c_ok "Pre-scan: SSL cert hostname -> $_ssl_host"
+        add_hosts_entry "$ip" "$_ssl_host" || true
+        _prescan_host="$_ssl_host"
+      fi
+    fi
+  fi
+
+  # 3) Fall back to <box>.htb if already in /etc/hosts (added by workspace)
+  if [[ -z "$_prescan_host" ]]; then
+    if grep -qE "[[:space:]]${box}\.htb(\$|[[:space:]])" /etc/hosts 2>/dev/null; then
+      _prescan_host="${box}.htb"
+      c_info "Pre-scan: using existing /etc/hosts entry: $_prescan_host"
+    fi
+  fi
+
+  # Update ar_target to the hostname if it's still an IP/CIDR and we found one.
+  # This makes AutoRecon (and feroxbuster, nikto, etc.) use the domain name.
+  if [[ -n "$_prescan_host" ]] && [[ "$ar_target" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+    c_ok "AutoRecon target: $ar_target -> $_prescan_host (hostname-aware scan)"
+    ar_target="$_prescan_host"
+  fi
+  # ── End pre-scan ──────────────────────────────────────────────────────────
+
   # Locate the autorecon binary (pipx install) or the cloned repo entrypoint.
   local ar=""
   if have autorecon; then
@@ -703,7 +772,7 @@ run_autorecon() {
   c_info "Launching AutoRecon against ${ar_target} -> output in $out  (this can take a while)"
 
   # Start AutoRecon in the background so the web analyzer can run alongside it.
-  # AutoRecon is given the CIDR target ($ar_target); web/secrets use the plain IP.
+  # AutoRecon is given the hostname (or CIDR if no hostname was found); web/secrets use the plain IP.
   if [[ $EUID -ne 0 ]] && have sudo; then
     ( sudo $ar -o "$out" "$ar_target" ) &
   else
