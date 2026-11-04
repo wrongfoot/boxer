@@ -16,6 +16,10 @@ https://github.com/peass-ng/PEASS-ng
 # Usage after clone:  python3 RootHound.py linpeas.txt -o report.html
 https://github.com/Noz2/RootHound
 
+# git-dumper — dump an exposed .git directory from a web server
+# (also installed via pipx; this entry keeps a local clone in ~/htb/tools)
+https://github.com/arthaud/git-dumper
+
 # --- add your own below ---
 # https://github.com/rebootuser/LinEnum
 # https://github.com/int0x33/nc.exe

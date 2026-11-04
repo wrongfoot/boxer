@@ -47,6 +47,7 @@ APT_PACKAGES=(
 # Tools installed via pipx (Python apps that are best isolated)
 PIPX_PACKAGES=(
   impacket
+  git-dumper                                              # dump exposed .git repos
   git+https://github.com/blacklanternsecurity/MANSPIDER   # optional smb crawler
 )
 
@@ -183,7 +184,7 @@ cmd_install() {
 # ---------------------------------------------------------------------------
 cmd_doctor() {
   local tools=(nmap ffuf gobuster nikto sqlmap nuclei hydra john hashcat \
-               smbclient netexec nc curl python3 pipx openvpn proxychains4 tmux jq searchsploit msfvenom)
+               smbclient netexec nc curl python3 pipx openvpn proxychains4 tmux jq searchsploit msfvenom git-dumper)
   local missing=0
   c_info "Checking installed tools..."
   for t in "${tools[@]}"; do
