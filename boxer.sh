@@ -39,9 +39,17 @@ APT_PACKAGES=(
   nmap netcat-openbsd ncat socat curl wget git jq dnsutils whois
   gobuster ffuf nikto sqlmap nuclei hydra john hashcat masscan
   smbclient netexec enum4linux ldap-utils snmp onesixtyone
+  python3-dulwich python3-requests python3-bs4 python3-socks
   python3 python3-pip python3-venv pipx
   ruby-full openvpn openssl proxychains4 tmux xxd inotify-tools exploitdb
   metasploit-framework veil
+)
+
+# System-wide pip packages (installed with --break-system-packages so they are
+# available when running scripts directly, not just inside a pipx/venv env).
+PIP_PACKAGES=(
+  pyftpdlib          # anonymous FTP delivery server ('ftp' command)
+  requests-pkcs12    # required by git-dumper (not in apt)
 )
 
 # Tools installed via pipx (Python apps that are best isolated)
@@ -157,12 +165,14 @@ cmd_install() {
     c_warn "pipx not available; skipping Python tool install"
   fi
 
-  # pyftpdlib powers the anonymous FTP delivery server ('ftp' command).
-  if pip3 install --break-system-packages pyftpdlib >/dev/null 2>&1; then
-    c_ok "pip: pyftpdlib (FTP delivery server)"
-  else
-    c_warn "pip: could not install pyftpdlib — the 'ftp' command will be unavailable"
-  fi
+  # System-wide pip packages (available to any Python script, not just pipx envs).
+  for _pip_pkg in "${PIP_PACKAGES[@]}"; do
+    if pip3 install --break-system-packages "$_pip_pkg" >/dev/null 2>&1; then
+      c_ok "pip: $_pip_pkg"
+    else
+      c_warn "pip: could not install '$_pip_pkg'"
+    fi
+  done
 
   # Pull + install any extra Git tools listed in $TOOLS_LIST (e.g. AutoRecon)
   if [[ -f "$TOOLS_LIST" ]]; then
@@ -228,6 +238,17 @@ install_one_repo() {
     if [[ -f "pyproject.toml" ]] && have pipx; then
       c_info "$name: pyproject.toml -> pipx install ."
       pipx install . >/dev/null 2>&1 && c_ok "$name installed via pipx" || c_warn "$name pipx install skipped/failed"
+      # Also install requirements into a venv so the script can be run directly
+      # from the clone (e.g. python3 git_dumper.py) without needing the pipx env.
+      if [[ -f "requirements.txt" ]]; then
+        python3 -m venv .venv >/dev/null 2>&1 || true
+        if [[ -f .venv/bin/activate ]]; then
+          # shellcheck disable=SC1091
+          . .venv/bin/activate
+          pip install -r requirements.txt >/dev/null 2>&1 && c_ok "$name: also installed deps into .venv for direct-script use" || true
+          deactivate 2>/dev/null || true
+        fi
+      fi
     elif [[ -f "setup.py" ]] && have pipx; then
       c_info "$name: setup.py -> pipx install ."
       pipx install . >/dev/null 2>&1 && c_ok "$name installed via pipx" || c_warn "$name pipx install skipped/failed"
