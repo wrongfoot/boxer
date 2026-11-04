@@ -2142,13 +2142,12 @@ EOF
    10) Match fingerprinted services to known exploits (searchsploit)
    11) Web vulnerability scan (nikto + nuclei + sqlmap)
    12) SMB null/guest access check + share listing (netexec + smbclient)
-   13) FTP anonymous login check
 
   Post-exploitation
-   14) Start a file-delivery server (HTTP or anonymous FTP)
-   15) Watch for linPEAS uploads -> auto privesc graph (RootHound)
-   16) Generate reverse-shell payload (msfvenom)
-   17) Stage flag-finder scripts (user.txt/root.txt, Linux + Windows)
+   13) Start a file-delivery server (HTTP or anonymous FTP)
+   14) Watch for linPEAS uploads -> auto privesc graph (RootHound)
+   15) Generate reverse-shell payload (msfvenom)
+   16) Stage flag-finder scripts (user.txt/root.txt, Linux + Windows)
 
     h) Full help / command reference
     0) Quit
@@ -2175,11 +2174,10 @@ EOF
       10) __label="Match services to known exploits" ;;
       11) __label="Web vulnerability scan (nikto + nuclei + sqlmap)" ;;
       12) __label="SMB null/guest access check + share listing" ;;
-      13) __label="FTP anonymous login check" ;;
-      14) __label="Start a file-delivery server" ;;
-      15) __label="Watch for linPEAS uploads (RootHound)" ;;
-      16) __label="Generate a reverse-shell payload" ;;
-      17) __label="Stage flag-finder scripts" ;;
+      13) __label="Start a file-delivery server" ;;
+      14) __label="Watch for linPEAS uploads (RootHound)" ;;
+      15) __label="Generate a reverse-shell payload" ;;
+      16) __label="Stage flag-finder scripts" ;;
       *)  __label="" ;;
     esac
     [[ -n "$__label" ]] && c_info "▶ Running: ${__label}"
@@ -2197,8 +2195,7 @@ EOF
       10) local box; ask box "Box name: "; cmd_exploits "${box:-target}" ;;
       11) local ip box; ask ip "Target IP or URL: "; ask box "Box name: "; cmd_webscan "${ip:-}" "${box:-target}" ;;
       12) local ip box; ask ip "Target IP: "; ask box "Box name: "; cmd_smbenum "${ip:-}" "${box:-target}" ;;
-      13) local ip box; ask ip "Target IP: "; ask box "Box name: "; cmd_ftpenum "${ip:-}" "${box:-target}" ;;
-      14) local proto d p b w
+      13) local proto d p b w
          ask proto "Which server?  1) HTTP (best if FTP is blocked)   2) anonymous FTP   [1]: "
          ask d "Directory to serve [~/htb/serve]: "
          ask b "Bind (auto / all / eth0 / tun0 / IP) [auto]: "
@@ -2212,9 +2209,9 @@ EOF
              ask p "Port [80]: "
              cmd_http "${d:-}" "${p:-80}" "${b:-auto}" ;;
          esac ;;   # exec's the server (ends the menu)
-      15) local b; ask b "Box name (blank = watch ALL boxes): "; cmd_roothound ${b:+"$b"} ;;
-      16) cmd_shell ;;
-      17) cmd_flags ;;
+      14) local b; ask b "Box name (blank = watch ALL boxes): "; cmd_roothound ${b:+"$b"} ;;
+      15) cmd_shell ;;
+      16) cmd_flags ;;
       h|H|help) usage ;;
       0|q|Q|quit|exit) c_info "Good hunting."; return 0 ;;
       "") : ;;   # empty input -> redraw
