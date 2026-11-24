@@ -27,6 +27,7 @@ analysis.
   - [exploits](#exploits)
   - [webscan](#webscan)
   - [smbenum](#smbenum)
+  - [filescan](#filescan)
   - [ftpenum](#ftpenum)
   - [roothound](#roothound)
   - [ftp](#ftp)
@@ -512,6 +513,51 @@ smbclient -N //10.10.10.40/Data
 smbclient -N //10.10.10.40/Data -c "recurse; ls"
 # Mount the share
 sudo mount -t cifs //10.10.10.40/Data /mnt/smb -o "guest,vers=2.0"
+```
+
+---
+
+### filescan
+
+**What it does:** scans a **local file or directory** for credentials and secrets —
+useful after pulling files off a target via SMB, FTP, git-dumper, or any file-transfer
+method. Unlike `secrets` (which crawls a live HTTP target), `filescan` works entirely
+offline against files already on your machine.
+
+```bash
+# Scan a whole SMB share you mounted/downloaded
+./boxer.sh filescan ~/htb/blue/smb-loot blue
+
+# Scan a single file (PHP config, .env, /etc/shadow dump, etc.)
+./boxer.sh filescan ~/htb/blue/loot/config.php blue
+
+# Scan git-dumper output
+./boxer.sh filescan ~/htb/blue/git-dump blue
+```
+
+Output: `~/htb/<box>/filescan-report.txt`
+
+**What it detects:**
+
+| Category | Examples |
+|----------|---------|
+| Credential assignments | `password = "s3cr3t"`, `DB_PASSWORD=...`, `db_pass: ...` |
+| `.env` / config secrets | `APP_KEY=`, `SECRET_KEY=`, `AUTH_SECRET=` |
+| Connection strings | `mysql://user:pass@host`, `postgresql://...` |
+| Hash formats | bcrypt (`$2y$`), sha512crypt (`$6$`), MD5 (32 hex), SHA1 (40 hex), NTLM |
+| `user:password` combos | Lines matching `/etc/shadow`, htpasswd, or `admin:s3cr3t` patterns |
+| Private keys | `-----BEGIN RSA PRIVATE KEY-----` and variants |
+| API tokens | AWS keys, GitHub tokens (`ghp_`, `gho_`...), Slack tokens, JWT |
+| Email addresses | For username enumeration |
+
+**False positives:** MD5/SHA1 patterns will match any 32/40-hex string (Git commits, etc.).
+Focus on the CRITICAL and HIGH severity hits first.
+
+**Tip:** combine with git-dumper on boxes that expose a `.git` directory:
+
+```bash
+git_dumper http://box.htb/.git ./git-dump
+./boxer.sh filescan ./git-dump blue
 ```
 
 ---

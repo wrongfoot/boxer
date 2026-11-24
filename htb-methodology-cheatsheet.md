@@ -65,6 +65,9 @@ nikto -host http://<ip>
 - Look for LFI/RFI, file upload, SSTI, IDOR, exposed `.git`/backups.
 - Hunt for leaked secrets in pages, JS, and JSON (creds, API keys, tokens):
   `./boxer.sh secrets <ip> <box>` — automated crawl + regex scan.
+- **Offline file credential scan** — after pulling files via SMB/FTP/git-dumper, scan
+  them locally for passwords, hashes, API keys, and `user:pass` combos:
+  `./boxer.sh filescan ~/htb/<box>/smb-loot <box>`
 - **Active vulnerability scan** — nikto + nuclei + sqlmap in one command:
   `./boxer.sh webscan <ip> <box>` (see below).
 
@@ -84,6 +87,26 @@ files, connect manually:
 ```bash
 ftp anonymous@10.10.10.40       # interactive FTP shell
 get <filename>                  # download a file
+```
+
+### Local file credential scanning
+
+After pulling files from a target (SMB shares, FTP, git-dumper, loot/), scan them locally:
+
+```bash
+./boxer.sh filescan ~/htb/<box>/smb-loot <box>
+./boxer.sh filescan ~/htb/<box>/git-dump <box>
+./boxer.sh filescan ~/htb/<box>/loot/config.php <box>
+```
+
+Output lands in `~/htb/<box>/filescan-report.txt`. Prioritize **CRITICAL** and **HIGH**
+findings. Detected patterns include: password/username assignments, `.env` secrets,
+connection strings, bcrypt/sha512crypt/MD5/NTLM hashes, `user:hash` combos (shadow/htpasswd),
+private keys, AWS/GitHub/JWT tokens.
+
+Combine with git-dumper:
+```bash
+git_dumper http://box.htb/.git ./git-dump && ./boxer.sh filescan ./git-dump blue
 ```
 
 ### SMB enumeration (automated)

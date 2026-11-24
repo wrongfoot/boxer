@@ -1277,6 +1277,182 @@ PY
 }
 
 # ---------------------------------------------------------------------------
+# filescan — scan local files / directories for credentials and secrets
+# ---------------------------------------------------------------------------
+# Unlike `secrets` (which crawls a live web target), filescan works entirely
+# offline on files you've already pulled from the target — SMB shares, FTP
+# downloads, git-dumper output, loot/, etc.
+#
+# Usage:
+#   ./boxer.sh filescan <path> [box]        # file or directory
+#   ./boxer.sh filescan /mnt/smb/Data blue
+#   ./boxer.sh filescan ./loot/config.php   blue
+#
+# Extra patterns beyond the web scanner:
+#   - Explicit username / password field assignments
+#   - user:password and user:hash combos (colon-separated lines)
+#   - .env / .ini / YAML / PHP / XML config credential patterns
+#   - Hash formats: MD5, SHA1, SHA256, bcrypt ($2y/$2b/$2a), sha512crypt ($6$), NTLM
+#   - /etc/shadow and htpasswd-style entries
+#
+# Output: ~/htb/<box>/filescan-report.txt  (file path + line number per hit)
+cmd_filescan() {
+  local path="${1:-}"; local box="${2:-target}"
+  if [[ -z "$path" ]]; then c_err "Usage: $0 filescan <file-or-directory> [box-name]"; exit 1; fi
+  if [[ ! -e "$path" ]]; then c_err "Path does not exist: $path"; exit 1; fi
+  if ! have python3; then c_err "python3 not installed. Run './boxer.sh install'."; exit 1; fi
+
+  local dir="${HTB_ROOT}/${box}"; mkdir -p "$dir"
+  local out="$dir/filescan-report.txt"
+
+  c_info "Scanning $(realpath "$path") for credentials and secrets -> $out"
+
+  python3 - "$(realpath "$path")" "$out" <<'PY'
+import sys, os, re, collections
+
+scan_root = sys.argv[1]
+outfile   = sys.argv[2]
+
+# ---------------------------------------------------------------------------
+# Detection rules: (name, severity, compiled regex)
+# ---------------------------------------------------------------------------
+RULES = [
+    # -- High-value secrets (shared with web scanner) -----------------------
+    ("Private key",          "CRITICAL", re.compile(r"-----BEGIN (?:RSA|EC|DSA|OPENSSH|PGP|PRIVATE) ?(?:PRIVATE )?KEY-----")),
+    ("AWS access key id",    "CRITICAL", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("AWS secret key",       "CRITICAL", re.compile(r"(?i)aws.{0,20}?(?:secret|key).{0,4}['\"]([0-9a-zA-Z/+]{40})['\"]")),
+    ("Google API key",       "HIGH",     re.compile(r"AIza[0-9A-Za-z_\-]{35}")),
+    ("Slack token",          "HIGH",     re.compile(r"xox[baprs]-[0-9A-Za-z\-]{10,}")),
+    ("GitHub token",         "HIGH",     re.compile(r"gh[pousr]_[0-9A-Za-z]{20,}")),
+    ("JWT",                  "HIGH",     re.compile(r"eyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}")),
+    ("Bearer token",         "HIGH",     re.compile(r"(?i)bearer\s+[a-z0-9._\-]{12,}")),
+    ("Basic-auth in URL",    "HIGH",     re.compile(r"https?://[^/\s:@]+:[^/\s:@]+@[^/\s]+")),
+
+    # -- Credential assignments (config files, source code) -----------------
+    ("Password field",       "CRITICAL", re.compile(r"(?i)['\"]?(?:password|passwd|pass|pwd)['\"]?\s*[:=]\s*['\"]([^'\"]{3,120})['\"]")),
+    ("Username field",       "HIGH",     re.compile(r"(?i)['\"]?(?:username|user(?:name)?|login|uid|account)['\"]?\s*[:=]\s*['\"]([A-Za-z0-9._@\-]{2,80})['\"]")),
+    ("DB credential",        "CRITICAL", re.compile(r"(?i)(?:db_pass(?:word)?|database_password|mysql_pass|pg_password|db_password)\s*[=:]\s*['\"]?([^'\"'\s]{3,80})")),
+    ("DB username",          "HIGH",     re.compile(r"(?i)(?:db_user(?:name)?|database_user|mysql_user|pg_user)\s*[=:]\s*['\"]?([A-Za-z0-9._@\-]{2,80})")),
+    (".env secret",          "CRITICAL", re.compile(r"(?i)^(?:SECRET(?:_KEY)?|APP_KEY|ENCRYPTION_KEY|AUTH_SECRET)\s*=\s*(.{6,120})", re.MULTILINE)),
+    ("Connection string",    "CRITICAL", re.compile(r"(?i)(?:mysql|postgresql|mssql|mongodb|redis|amqp)://[^\s'\"]+")),
+
+    # -- Hash formats --------------------------------------------------------
+    ("Hash (bcrypt)",        "HIGH",     re.compile(r"\$2[ayb]\$\d{2}\$[A-Za-z0-9./]{53}")),
+    ("Hash (sha512crypt)",   "HIGH",     re.compile(r"\$6\$[A-Za-z0-9./]{8,16}\$[A-Za-z0-9./]{86}")),
+    ("Hash (sha256crypt)",   "HIGH",     re.compile(r"\$5\$[A-Za-z0-9./]{8,16}\$[A-Za-z0-9./]{43}")),
+    ("Hash (MD5)",           "MEDIUM",   re.compile(r"\b[0-9a-fA-F]{32}\b")),
+    ("Hash (SHA1)",          "MEDIUM",   re.compile(r"\b[0-9a-fA-F]{40}\b")),
+    ("Hash (SHA256)",        "MEDIUM",   re.compile(r"\b[0-9a-fA-F]{64}\b")),
+    ("Hash (NTLM/LM)",       "HIGH",     re.compile(r"\b[0-9a-fA-F]{32}:[0-9a-fA-F]{32}\b")),
+
+    # -- user:pass combo lines -----------------------------------------------
+    # Matches lines like  admin:s3cr3t  or  john:$6$abc...  (shadow/htpasswd)
+    ("user:password combo",  "CRITICAL", re.compile(r"^([A-Za-z0-9._@\-]{1,64}):(\$[0-9a-zA-Z$./]{10,}|[A-Za-z0-9+/]{12,}={0,2}|[^\s:]{6,120})$", re.MULTILINE)),
+
+    # -- Misc sensitive strings ----------------------------------------------
+    ("Email address",        "INFO",     re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")),
+    ("IP:port credential",   "MEDIUM",   re.compile(r"(?i)(?:host|server|endpoint)\s*[:=]\s*['\"]?(\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?)")),
+]
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+findings = []
+seen = set()
+SKIP_EXTS = {'.png','.jpg','.jpeg','.gif','.ico','.svg','.pdf','.zip','.gz',
+             '.tar','.bz2','.xz','.exe','.elf','.so','.dll','.pyc','.class',
+             '.jar','.war','.bin','.img','.iso','.mp4','.mp3','.woff','.ttf'}
+
+def is_binary(path):
+    """Quick binary check: look for null bytes in first 8 KB."""
+    try:
+        with open(path, 'rb') as f:
+            return b'\x00' in f.read(8192)
+    except Exception:
+        return True
+
+def scan_file(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext in SKIP_EXTS:
+        return
+    if is_binary(filepath):
+        return
+    try:
+        with open(filepath, encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
+    except Exception:
+        return
+    text = ''.join(lines)
+    for name, sev, rx in RULES:
+        for m in rx.finditer(text):
+            matched = m.group(0).strip()
+            # derive line number from character offset
+            lineno = text[:m.start()].count('\n') + 1
+            # grab surrounding context (the matched line ± 1)
+            lo = max(0, lineno - 2); hi = min(len(lines), lineno + 1)
+            ctx = ' | '.join(l.rstrip() for l in lines[lo:hi])[:200]
+            key = (name, matched[:120])
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append((sev, name, filepath, lineno, matched[:120], ctx))
+
+# ---------------------------------------------------------------------------
+# Walk files
+# ---------------------------------------------------------------------------
+if os.path.isfile(scan_root):
+    scan_file(scan_root)
+else:
+    for root, dirs, files in os.walk(scan_root):
+        # skip hidden dirs like .git internal objects, __pycache__, etc.
+        dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+        for fname in files:
+            scan_file(os.path.join(root, fname))
+
+# ---------------------------------------------------------------------------
+# Report
+# ---------------------------------------------------------------------------
+order = {"CRITICAL":0,"HIGH":1,"MEDIUM":2,"LOW":3,"INFO":4}
+findings.sort(key=lambda x: order.get(x[0], 9))
+counts = collections.Counter(f[0] for f in findings)
+
+with open(outfile, 'w', encoding='utf-8') as fo:
+    fo.write(f"# File credential scan: {scan_root}\n")
+    fo.write(f"# Findings: {len(findings)}\n")
+    fo.write("# Review each hit — regex matches can produce false positives.\n\n")
+    if not findings:
+        fo.write("No credentials or secrets detected.\n")
+    for sev, rule, fpath, lineno, matched, ctx in findings:
+        fo.write(f"[{sev}] {rule}\n")
+        fo.write(f"   file:    {fpath}:{lineno}\n")
+        fo.write(f"   match:   {matched}\n")
+        fo.write(f"   context: {ctx}\n\n")
+
+# Console output
+def cprint(sev, msg):
+    color = {"CRITICAL":"1;31","HIGH":"1;31","MEDIUM":"1;33","LOW":"1;34","INFO":"0"}.get(sev,"0")
+    sys.stderr.write(f"\033[{color}m[{sev}]\033[0m {msg}\n")
+
+if findings:
+    cprint("HIGH", f"{len(findings)} finding(s): " + ", ".join(f"{c} {s.lower()}" for s,c in counts.most_common()))
+    for sev, rule, fpath, lineno, matched, _ in findings[:15]:
+        rel = os.path.relpath(fpath, scan_root) if os.path.isdir(scan_root) else os.path.basename(fpath)
+        cprint(sev, f"{rule}  {rel}:{lineno}  {matched}")
+    if len(findings) > 15:
+        sys.stderr.write(f"    ... and {len(findings)-15} more — see the report.\n")
+else:
+    sys.stderr.write("[*] No credentials or secrets found in scanned files.\n")
+PY
+  local rc=$?
+  if [[ $rc -eq 0 ]]; then
+    c_ok "File scan complete -> $out"
+  else
+    c_warn "File scan exited with code $rc (partial results may be in $out)"
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # exploits — map fingerprinted services to known exploits via searchsploit
 # ---------------------------------------------------------------------------
 # Parses the nmap XML produced by AutoRecon (and the built-in recon), extracts
@@ -2164,12 +2340,13 @@ EOF
    10) Match fingerprinted services to known exploits (searchsploit)
    11) Web vulnerability scan (nikto + nuclei + sqlmap)
    12) SMB null/guest access check + share listing (netexec + smbclient)
+   13) Scan local files/dirs for credentials + secrets (filescan)
 
   Post-exploitation
-   13) Start a file-delivery server (HTTP or anonymous FTP)
-   14) Watch for linPEAS uploads -> auto privesc graph (RootHound)
-   15) Generate reverse-shell payload (msfvenom)
-   16) Stage flag-finder scripts (user.txt/root.txt, Linux + Windows)
+   14) Start a file-delivery server (HTTP or anonymous FTP)
+   15) Watch for linPEAS uploads -> auto privesc graph (RootHound)
+   16) Generate reverse-shell payload (msfvenom)
+   17) Stage flag-finder scripts (user.txt/root.txt, Linux + Windows)
 
     h) Full help / command reference
     0) Quit
@@ -2217,7 +2394,8 @@ EOF
       10) local box; ask box "Box name: "; cmd_exploits "${box:-target}" ;;
       11) local ip box; ask ip "Target IP or URL: "; ask box "Box name: "; cmd_webscan "${ip:-}" "${box:-target}" ;;
       12) local ip box; ask ip "Target IP: "; ask box "Box name: "; cmd_smbenum "${ip:-}" "${box:-target}" ;;
-      13) local proto d p b w
+      13) local path box; ask path "Path to file or directory to scan: "; ask box "Box name: "; cmd_filescan "${path:-}" "${box:-target}" ;;
+      14) local proto d p b w
          ask proto "Which server?  1) HTTP (best if FTP is blocked)   2) anonymous FTP   [1]: "
          ask d "Directory to serve [~/htb/serve]: "
          ask b "Bind (auto / all / eth0 / tun0 / IP) [auto]: "
@@ -2231,9 +2409,9 @@ EOF
              ask p "Port [80]: "
              cmd_http "${d:-}" "${p:-80}" "${b:-auto}" ;;
          esac ;;   # exec's the server (ends the menu)
-      14) local b; ask b "Box name (blank = watch ALL boxes): "; cmd_roothound ${b:+"$b"} ;;
-      15) cmd_shell ;;
-      16) cmd_flags ;;
+      15) local b; ask b "Box name (blank = watch ALL boxes): "; cmd_roothound ${b:+"$b"} ;;
+      16) cmd_shell ;;
+      17) cmd_flags ;;
       h|H|help) usage ;;
       0|q|Q|quit|exit) c_info "Good hunting."; return 0 ;;
       "") : ;;   # empty input -> redraw
@@ -2270,6 +2448,13 @@ Commands:
                                 Stage 2: smbclient -N -L //<ip> (if access confirmed).
                                 Runs automatically when port 445 is found by recon/AutoRecon.
                                 Output: ~/htb/<box>/nmap/smb-null-check.txt
+  filescan <path> [box]         Scan a local file or directory for credentials and secrets.
+                                Works offline on files pulled from the target (SMB shares,
+                                FTP downloads, git-dumper output, loot/, etc.).
+                                Detects: password/username fields, .env/config creds, hashes
+                                (bcrypt, sha512crypt, MD5, SHA1, SHA256, NTLM), user:pass
+                                combos, private keys, API tokens, JWT, connection strings.
+                                Output: ~/htb/<box>/filescan-report.txt
   ftpenum <ip> [box]            FTP anonymous login check.
                                 Attempts anonymous:anonymous login via curl.
                                 If successful, lists the root directory.
@@ -2312,6 +2497,7 @@ main() {
     exploits)  cmd_exploits "$@" ;;
     webscan)   cmd_webscan "$@" ;;
     smbenum)   cmd_smbenum "$@" ;;
+    filescan)  cmd_filescan "$@" ;;
     ftpenum)   cmd_ftpenum "$@" ;;
     roothound) cmd_roothound "$@" ;;
     ftp)       cmd_ftp "$@" ;;
